@@ -14,6 +14,7 @@ import os
 
 import httpx
 from mcp.server.mcpserver import MCPServer
+from .access import agent_token
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 BASE = os.environ.get("HELIXTUNE_URL", "http://127.0.0.1:8765")
@@ -31,9 +32,18 @@ mcp = MCPServer(
 )
 
 
-def _call(method: str, path: str, body=None, params=None) -> str:
-    with httpx.Client(base_url=BASE, timeout=10, headers={"x-helixtune-source": "agent"}) as c:
-        r = c.request(method, path, json=body, params=params)
+_NO_BODY = object()
+
+
+def _call(method: str, path: str, body=_NO_BODY, params=None) -> str:
+    with httpx.Client(base_url=BASE, timeout=10, headers={"Authorization": f"Bearer {agent_token()}"}) as c:
+        if body is _NO_BODY:
+            r = c.request(method, path, params=params)
+        elif body is None:
+            # httpx json=None means no body, whereas a crossover bypass needs JSON null.
+            r = c.request(method, path, content="null", headers={"Content-Type": "application/json"}, params=params)
+        else:
+            r = c.request(method, path, json=body, params=params)
     try:
         data = r.json()
     except ValueError:
@@ -59,8 +69,9 @@ def get_status() -> str:
 @mcp.tool()
 def get_overview() -> str:
     """Compact view of the whole tune: every channel's settings and only its active EQ bands."""
-    with httpx.Client(base_url=BASE, timeout=10) as c:
-        t = c.get("/api/tune").json()
+    t = json.loads(_call("GET", "/api/tune"))
+    if "channels" not in t:
+        return json.dumps(t)
     return json.dumps({"name": t["name"], "master_gain_db": t["master_gain_db"],
                        "channels": [_summ_channel(ch) for ch in t["channels"]]}, separators=(",", ":"))
 
@@ -76,7 +87,8 @@ def set_channel(channel: str, name: str | None = None, role: str | None = None, 
                 mute: bool | None = None, invert: bool | None = None, delay_ms: float | None = None,
                 source: str | None = None) -> str:
     """Change channel basics. role: tweeter|midrange|midbass|woofer|subwoofer|fullrange|unused.
-    Roles drive safety rules (e.g. tweeters must have a high-pass). source: L | R | mono (L+R
+    Roles can tighten protection floors; changing a label cannot lower existing physical-output limits.
+    source: L | R | mono (L+R
     summed at -6 dB each, e.g. for a mono subwoofer amp) | off."""
     mixes = {"L": {"L": 1.0}, "R": {"R": 1.0}, "mono": {"L": 0.5, "R": 0.5}, "off": {}}
     if source is not None and source not in mixes:

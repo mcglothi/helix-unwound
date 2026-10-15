@@ -3,6 +3,7 @@
   import type { Crossover, EqType, Role, XoType } from '../types'
   import { ROLE_COLORS, ROLE_LABEL, SOURCE_LABEL, SOURCE_MIX, sourceOf } from '../types'
   import { fmtHz } from '../dsp'
+  import OutputProtection from './OutputProtection.svelte'
 
   const ch = $derived(app.channel)
   const ROLES: Role[] = ['tweeter', 'midrange', 'midbass', 'woofer', 'subwoofer', 'fullrange', 'unused']
@@ -35,7 +36,7 @@
     </header>
 
     <div class="row2">
-      <label>Role
+      <label>Role label
         <select value={ch.role} onchange={(e) => app.patchChannel(ch.id, { role: e.currentTarget.value as Role })}>
           {#each ROLES as r}<option value={r}>{ROLE_LABEL[r]}</option>{/each}
         </select>
@@ -51,6 +52,7 @@
                onchange={(e) => app.patchChannel(ch.id, { delay_ms: +(((+e.currentTarget.value / 100) / SPEED_OF_SOUND) * 1000).toFixed(4) })} />
       </label>
     </div>
+    <OutputProtection cid={ch.id} />
     <div class="src">
       <span class="lbl">Input</span>
       <div class="seg" role="group" aria-label="Input source">

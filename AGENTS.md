@@ -24,6 +24,7 @@ Last Updated: 2026-10-15
 - Built UI goes to ignored `src/helixtune/web/dist/`; rebuild after frontend changes.
 - Run focused regressions, then relevant suites once. Record counts and skipped private-input tests in the handoff.
 - New foundation tests should run without proprietary artifacts or personal backups.
+- API tests must exercise real owner/agent authentication. Use the test-only `owner_client` helper for owner fixtures; do not add a production authentication bypass. See `docs/ACCESS.md` for bootstrap and scopes.
 
 ## Handoff
 

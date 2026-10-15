@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from conftest import owner_client
 
 from helixtune.api import create_app
 from helixtune.devicefile import load_at01
@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(not AT01.exists(), reason="vendor device files n
 
 @pytest.fixture
 def c(tmp_path):
-    return TestClient(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
+    return owner_client(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
 
 
 def test_ui_and_tune_served(c):
@@ -33,8 +33,11 @@ def test_edit_flow_and_revision(c):
 
 
 def test_agent_cannot_full_push(c):
+    from fastapi.testclient import TestClient
+
     c.post("/api/device/connect", json={"port": "emulator", "allow_writes": True})
-    r = c.post("/api/device/push-full", json={"confirm": "OVERWRITE"}, headers={"x-helixtune-source": "agent"})
+    agent = TestClient(c.app, headers={"Authorization": f"Bearer {c.app.state.access.token('agent')}"})
+    r = agent.post("/api/device/push-full", json={"confirm": "OVERWRITE"}, headers={"x-helixtune-source": "ui"})
     assert r.status_code == 403
     assert c.post("/api/device/push-full", json={"confirm": "OVERWRITE"}).status_code == 200
     assert c.get("/api/status").json()["device"]["baselined"] is True

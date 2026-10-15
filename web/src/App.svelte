@@ -10,13 +10,14 @@
   import SetupWizard from './lib/components/SetupWizard.svelte'
   import ProposalCard from './lib/components/ProposalCard.svelte'
   import SystemView from './lib/components/SystemView.svelte'
+  import SessionGate from './lib/components/SessionGate.svelte'
 
   onMount(() => {
-    theme.load()
-    app.start()
+    theme.apply()
   })
 </script>
 
+<SessionGate onready={() => { theme.load(); app.start() }}>
 <Header />
 {#if app.mode === 'studio'}
   <div class="studio">
@@ -37,6 +38,7 @@
     <div class="toast {t.kind}">{t.text}</div>
   {/each}
 </div>
+</SessionGate>
 
 <style>
   .stack { display: flex; flex-direction: column; gap: var(--gap); }

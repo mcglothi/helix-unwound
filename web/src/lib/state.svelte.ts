@@ -1,7 +1,7 @@
 // Single client-side store. The engine is the source of truth: every edit goes through the
 // API, then we re-read. Polling `revision` picks up edits made by agents or other devices.
 
-import type { Channel, Component, Connection, Design, EqBand, Proposal, ResponseView, SpecFields, Status, SystemView, Tune, Crossover, Vehicle } from './types'
+import type { Channel, Component, Connection, Design, EqBand, OutputProtection, Proposal, ResponseView, SpecFields, Status, SystemView, Tune, Crossover, Vehicle } from './types'
 
 export type Mode = 'studio' | 'drive' | 'setup' | 'system'
 
@@ -41,6 +41,7 @@ class AppState {
   busy = $state(false)
   design = $state<Design | null>(null)
   specFields = $state<SpecFields>({})
+  protections = $state<Record<string, OutputProtection>>({})
   selectedComponent = $state<string | null>(null)
   private rev = -1
   private toastId = 0
@@ -56,14 +57,16 @@ class AppState {
   }
 
   async refresh() {
-    const [tune, system, electrical, snaps, design] = await Promise.all([
+    const [tune, system, electrical, snaps, design, protections] = await Promise.all([
       api<Tune>('GET', '/api/tune'),
       api<SystemView>('GET', `/api/system?seat=${this.seat}&smoothing=${this.smoothing}&points=240`),
       api<ResponseView>('GET', '/api/response?points=240'),
       api<string[]>('GET', '/api/snapshots'),
       api<Design>('GET', '/api/design'),
+      api<{ outputs: Record<string, OutputProtection> }>('GET', '/api/protections'),
     ])
     this.design = design
+    this.protections = protections.outputs
     if (!Object.keys(this.specFields).length) this.specFields = await api<SpecFields>('GET', '/api/design/spec-fields')
     this.tune = tune
     this.system = system
@@ -104,6 +107,9 @@ class AppState {
 
   patchChannel(cid: string, fields: Partial<Channel>) {
     return this.run(api('PATCH', `/api/channels/${cid}`, fields))
+  }
+  configureProtection(cid: string, protection: OutputProtection) {
+    return this.run(api('PUT', `/api/protections/${cid}`, { protection, confirm: 'RECONFIGURE' }))
   }
   setCrossover(cid: string, which: 'hp' | 'lp', xo: Crossover | null) {
     return this.run(api('PUT', `/api/channels/${cid}/${which}`, xo))

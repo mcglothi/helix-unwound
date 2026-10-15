@@ -20,6 +20,14 @@ uv run helixtune serve                 # http://127.0.0.1:8765
 uv run helixtune serve --host 0.0.0.0  # reachable from your phone on the LAN
 ```
 
+In a second terminal, run `uv run helixtune open` to open the authenticated local
+owner workstation. Match `--data` and `--port` if you changed them on `serve`.
+The command passes the owner credential through a URL fragment, which the UI
+immediately removes and exchanges for an HttpOnly session cookie; it never prints
+the credential. Opening the URL directly shows a sign-in screen. Network access
+also requires credentials; HTTP does not encrypt them, so use a trusted network
+or an encrypted tunnel. See [`docs/ACCESS.md`](docs/ACCESS.md) for access and migration.
+
 The parameter map (`DSPPro2.at01`) ships inside the vendor installer and is not
 included here. `serve` finds it in `artifacts/extracted/app/deviceFiles/`,
 `~/.helixtune/`, `$HELIXTUNE_AT01`, or `--at01 PATH`.
@@ -57,12 +65,28 @@ Tools: overview, per-channel read/write, crossovers, EQ bands, master gain,
 predicted response, undo, snapshots, safety policy. Agents cannot do a full
 overwrite and cannot change the safety policy.
 
+MCP automatically uses `auth/agent.token` in the engine's data directory. For a
+custom directory, set `HELIXTUNE_DATA_DIR`; `HELIXTUNE_URL` selects another API
+address. `HELIXTUNE_TOKEN` can supply a credential explicitly. Give agents the
+agent credential, which cannot connect/disconnect devices, overwrite the DSP, or
+reconfigure physical output limits. Audit headers do not grant permissions.
+
 ## Safety
 
 Enforced in the engine for every client (`~/.helixtune/safety.json`):
 role-based minimum high-pass (tweeter ≥ 1.5 kHz, mid ≥ 150 Hz, …), max EQ boost,
 max channel/master gain, max boost increase per step, no unmuting with positive
-gain. Nothing is written to a device until a person confirms a full overwrite.
+gain. Gain/EQ ceilings apply even to outputs labeled unused. Nothing is written
+to a device until an owner explicitly establishes a full-overwrite baseline.
+
+Physical output floors live separately in `protections.json`. Existing current
+tunes and equipment specifications migrate on startup; later accepted roles and
+specifications can tighten limits. Relabeling a driver, muting it, deleting a
+specification, or restoring a scene cannot silently relax those limits. To change
+physical equipment, disconnect the device, correct its role/specifications, then
+deliberately reconfigure its limits in Studio's output protection panel. Current
+roles/specifications can still impose stricter limits. These are conservative
+configuration checks, not proof of speaker protection or verified hardware behavior.
 
 ## Layout
 

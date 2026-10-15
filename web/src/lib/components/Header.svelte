@@ -20,6 +20,13 @@
     document.documentElement.dataset.mode = m
     theme.apply(m)
   }
+  async function signOut() {
+    try {
+      const response = await fetch('/api/session', { method: 'DELETE' })
+      if (response.ok) location.reload()
+      else app.toast('Could not end the session. Check the engine connection.')
+    } catch { app.toast('Could not end the session. Check the engine connection.') }
+  }
   function snapshot(e: Event) {
     const sel = e.currentTarget as HTMLSelectElement
     const v = sel.value
@@ -67,6 +74,7 @@
   <button aria-label="Undo" title="Undo" onclick={() => app.undo()} disabled={!app.status?.undo_depth}>
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/></svg>
   </button>
+  <button onclick={signOut}>Sign out</button>
 </header>
 {#if dev?.last_error}
   <div class="device-error" role="alert">{dev.last_error} Edits are staged offline until then.</div>

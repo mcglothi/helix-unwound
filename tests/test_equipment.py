@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from conftest import owner_client
 
 from helixtune import equipment as eq
 from helixtune.api import create_app
@@ -46,7 +46,7 @@ def test_seed_from_tune():
 
 @pytest.mark.skipif(not AT01.exists(), reason="vendor device files not extracted")
 def test_recorded_fs_tightens_safety(tmp_path):
-    c = TestClient(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
+    c = owner_client(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
     c.put("/api/channels/E/hp", json={"type": "linkwitz_riley", "slope_db": 24, "freq_hz": 1800})
     assert c.patch("/api/channels/E", json={"role": "tweeter", "name": "Front L High"}).status_code == 200
     spk = c.post("/api/equipment", json={"kind": "speaker", "name": "Tweeter L", "channels": ["E"]}).json()
@@ -59,9 +59,12 @@ def test_recorded_fs_tightens_safety(tmp_path):
     c.patch(f"/api/equipment/{spk['id']}", json={"specs": {"hp_min": {"value": 2600, "unit": "Hz", "source": "test"}}})
     assert "2600" in c.patch("/api/channels/E", json={"gain_db": -1}).json()["problems"][0]
     c.patch(f"/api/equipment/{spk['id']}", json={"specs": {"hp_min": None}})
-    assert c.put("/api/channels/E/hp", json={"type": "linkwitz_riley", "slope_db": 24, "freq_hz": 2500}).status_code == 200
-    # deleting the spec relaxes it again
+    assert c.put("/api/channels/E/hp", json={"type": "linkwitz_riley", "slope_db": 24, "freq_hz": 2500}).status_code == 409
+    # Removing specs cannot silently relax a physical-output floor.
     c.patch(f"/api/equipment/{spk['id']}", json={"specs": {"fs": None}})
+    assert c.put("/api/channels/E/hp", json={"type": "linkwitz_riley", "slope_db": 24, "freq_hz": 1800}).status_code == 409
+    assert c.put("/api/protections/E", json={"protection": {"min_hp_hz": 1500, "fs_factor": 2},
+                                           "confirm": "RECONFIGURE"}).status_code == 200
     assert c.put("/api/channels/E/hp", json={"type": "linkwitz_riley", "slope_db": 24, "freq_hz": 1800}).status_code == 200
     # wiring integrity
     assert c.post("/api/connections", json={"src": spk["id"], "dst": "nope", "signal": "speaker"}).status_code == 404
@@ -69,7 +72,7 @@ def test_recorded_fs_tightens_safety(tmp_path):
 
 @pytest.mark.skipif(not AT01.exists(), reason="vendor device files not extracted")
 def test_media_and_positions(tmp_path):
-    c = TestClient(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
+    c = owner_client(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
     png = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
                         "1f15c4890000000d49444154789c6360000002000100e221bc330000000049454e44ae426082")
     m = c.post("/api/media", files={"file": ("cab.png", png, "image/png")}, data={"caption": "cab top-down"}).json()
@@ -103,7 +106,7 @@ def test_legacy_port_names_upgraded():
 
 @pytest.mark.skipif(not AT01.exists(), reason="vendor device files not extracted")
 def test_manufacturer_lowpass_limit(tmp_path):
-    c = TestClient(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
+    c = owner_client(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
     c.put("/api/channels/A/hp", json={"type": "linkwitz_riley", "slope_db": 24, "freq_hz": 60})
     c.patch("/api/channels/A", json={"role": "midbass"})
     spk = c.post("/api/equipment", json={"kind": "speaker", "channels": ["A"],

@@ -223,6 +223,7 @@ def channel_driver_limits(design: SystemDesign) -> dict[str, DriverLimits]:
                 continue
             cur.fs = max(x for x in (cur.fs, lim.fs) if x is not None) if (cur.fs or lim.fs) else None
             cur.hp_min = max(x for x in (cur.hp_min, lim.hp_min) if x is not None) if (cur.hp_min or lim.hp_min) else None
+            cur.hp_min_slope = max(x for x in (cur.hp_min_slope, lim.hp_min_slope) if x is not None) if (cur.hp_min_slope or lim.hp_min_slope) else None
             cur.lp_max = min(x for x in (cur.lp_max, lim.lp_max) if x is not None) if (cur.lp_max or lim.lp_max) else None
     return out
 

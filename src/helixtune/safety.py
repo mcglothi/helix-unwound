@@ -6,9 +6,11 @@ Edit the policy (saved alongside the tune) to change limits deliberately.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Literal
 
-from .model import Role, Tune
+from pydantic import BaseModel, Field, field_validator
+
+from .model import CHANNELS, Role, Tune
 
 
 class RolePolicy(BaseModel):
@@ -34,51 +36,77 @@ class SafetyPolicy(BaseModel):
     roles: dict[Role, RolePolicy] = Field(default_factory=lambda: dict(DEFAULT_ROLES))
 
 
-def check(tune: Tune, policy: SafetyPolicy, previous: Tune | None = None, driver_limits: dict | None = None) -> list[str]:
+class OutputProtection(BaseModel):
+    """Physical-output limits, stored outside tunes and their editable roles."""
+
+    min_hp_hz: float | None = Field(None, ge=10, le=24000, allow_inf_nan=False)
+    min_hp_slope_db: int = Field(12, ge=6, le=48, multiple_of=6)
+    max_lp_hz: float | None = Field(None, ge=10, le=24000, allow_inf_nan=False)
+    fs_factor: float = Field(0, ge=0, le=10, allow_inf_nan=False)
+
+
+class OutputProtections(BaseModel):
+    version: Literal[1] = 1
+    outputs: dict[str, OutputProtection] = Field(default_factory=lambda: {c: OutputProtection() for c in CHANNELS})
+
+    @field_validator("outputs")
+    @classmethod
+    def _outputs(cls, value):
+        if set(value) != set(CHANNELS):
+            raise ValueError(f"protection settings require every physical output {CHANNELS}")
+        return value
+
+
+def tighten_outputs(tune: Tune, policy: SafetyPolicy, existing: OutputProtections | None = None,
+                    driver_limits: dict | None = None) -> OutputProtections:
+    """Learn stricter floors without ever relaxing previously recorded limits."""
+    result = (existing or OutputProtections()).model_copy(deep=True)
+    for ch in tune.channels:
+        guard = result.outputs[ch.id]
+        rp = policy.roles.get(ch.role)
+        need = rp.min_hp_hz if rp else None
+        factor = max(guard.fs_factor, (rp.fs_factor or 0) if rp else 0)
+        lim = (driver_limits or {}).get(ch.id)
+        if lim:
+            candidates = [v for v in (need, lim.hp_min, factor * lim.fs if lim.fs and factor else None) if v]
+            need = max(candidates) if candidates else None
+            if lim.lp_max:
+                guard.max_lp_hz = min(guard.max_lp_hz, lim.lp_max) if guard.max_lp_hz else lim.lp_max
+            if need and lim.hp_min_slope:
+                guard.min_hp_slope_db = max(guard.min_hp_slope_db, int(lim.hp_min_slope))
+        if need:
+            guard.min_hp_hz = max(guard.min_hp_hz or 0, need)
+            if rp:
+                guard.min_hp_slope_db = max(guard.min_hp_slope_db, rp.min_hp_slope_db)
+        guard.fs_factor = factor
+    return OutputProtections.model_validate(result.model_dump())
+
+
+def check(tune: Tune, policy: SafetyPolicy, previous: Tune | None = None, driver_limits: dict | None = None,
+          protections: OutputProtections | None = None) -> list[str]:
     """driver_limits: channel -> equipment.DriverLimits from recorded driver specs."""
     problems: list[str] = []
-    for cid, lim in (driver_limits or {}).items():
-        try:
-            ch = tune.channel(cid)
-        except KeyError:
-            continue
-        if ch.mute or ch.role is Role.UNUSED:
-            continue
-        rp = policy.roles.get(ch.role)
-        need, why = 0.0, []
-        if lim.fs and rp and rp.fs_factor:
-            need, why = rp.fs_factor * lim.fs, [f"{rp.fs_factor:g}×Fs {lim.fs:g} Hz"]
-        if lim.hp_min and lim.hp_min >= need:
-            need, why = lim.hp_min, [f"manufacturer minimum {lim.hp_min:g} Hz"]
-        if need:
-            if ch.hp is None or ch.hp.freq_hz < round(need):
-                have = f"{ch.hp.freq_hz:g} Hz" if ch.hp else "none"
-                problems.append(f"{cid}: high-pass {have} is below {round(need)} Hz ({why[0]}, {lim.label})")
-            elif lim.hp_min_slope and ch.hp.slope_db < lim.hp_min_slope:
-                problems.append(f"{cid}: high-pass slope {ch.hp.slope_db} dB/oct is below the manufacturer's "
-                                f"{lim.hp_min_slope:g} dB/oct ({lim.label})")
-        if lim.lp_max and (ch.lp is None or ch.lp.freq_hz > lim.lp_max):
-            have = f"{ch.lp.freq_hz:g} Hz" if ch.lp else "none"
-            problems.append(f"{cid}: low-pass {have} is above the manufacturer maximum {lim.lp_max:g} Hz ({lim.label})")
+    effective = tighten_outputs(tune, policy, protections, driver_limits)
     if tune.master_gain_db > policy.max_master_gain_db:
         problems.append(f"master gain {tune.master_gain_db} dB exceeds {policy.max_master_gain_db} dB")
     for ch in tune.channels:
-        if ch.role is Role.UNUSED:
-            continue
         if ch.gain_db > policy.max_channel_gain_db:
             problems.append(f"{ch.id}: gain {ch.gain_db} dB exceeds {policy.max_channel_gain_db} dB")
         for i, b in enumerate(ch.eq):
             if b.enabled and b.gain_db > policy.max_eq_boost_db:
                 problems.append(f"{ch.id} band {i + 1}: boost {b.gain_db} dB exceeds {policy.max_eq_boost_db} dB")
-        rp = policy.roles.get(ch.role)
-        if rp and rp.min_hp_hz is not None and not ch.mute:
+        guard = effective.outputs[ch.id]
+        if guard.min_hp_hz is not None and not ch.mute:
             if ch.hp is None:
-                problems.append(f"{ch.id} ({ch.role.value}): high-pass filter required (>= {rp.min_hp_hz} Hz)")
+                problems.append(f"{ch.id}: high-pass filter required (>= {guard.min_hp_hz:g} Hz, physical output)")
             else:
-                if ch.hp.freq_hz < rp.min_hp_hz:
-                    problems.append(f"{ch.id} ({ch.role.value}): high-pass {ch.hp.freq_hz} Hz below minimum {rp.min_hp_hz} Hz")
-                if ch.hp.slope_db < rp.min_hp_slope_db:
-                    problems.append(f"{ch.id} ({ch.role.value}): high-pass slope {ch.hp.slope_db} dB/oct below {rp.min_hp_slope_db}")
+                if ch.hp.freq_hz < guard.min_hp_hz:
+                    problems.append(f"{ch.id}: high-pass {ch.hp.freq_hz:g} Hz below minimum {guard.min_hp_hz:g} Hz (physical output)")
+                if ch.hp.slope_db < guard.min_hp_slope_db:
+                    problems.append(f"{ch.id}: high-pass slope {ch.hp.slope_db} dB/oct below {guard.min_hp_slope_db} (physical output)")
+        if guard.max_lp_hz and not ch.mute and (ch.lp is None or ch.lp.freq_hz > guard.max_lp_hz):
+            have = f"{ch.lp.freq_hz:g} Hz" if ch.lp else "none"
+            problems.append(f"{ch.id}: low-pass {have} is above the physical output maximum {guard.max_lp_hz:g} Hz")
     if previous is not None:
         problems += _step_limits(tune, previous, policy)
     return problems
@@ -89,7 +117,8 @@ def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy) -> list[str]:
     lim = policy.max_boost_step_db
     if new.master_gain_db - old.master_gain_db > lim:
         out.append(f"master gain raised by {new.master_gain_db - old.master_gain_db:.1f} dB in one step (max {lim})")
-    for n, o in zip(new.channels, old.channels):
+    for n in new.channels:
+        o = old.channel(n.id)
         if n.gain_db - o.gain_db > lim:
             out.append(f"{n.id}: gain raised by {n.gain_db - o.gain_db:.1f} dB in one step (max {lim})")
         if o.mute and not n.mute and n.gain_db > 0:

@@ -1,5 +1,5 @@
 import pytest
-from fastapi.testclient import TestClient
+from conftest import owner_client
 
 from helixtune.api import create_app
 from helixtune.emulator import EmulatedDevice
@@ -159,7 +159,7 @@ def test_failed_restore_preserves_history_and_ab_slots(engine, operation):
 
 def test_api_reports_write_failure_and_allows_explicit_recovery(engine):
     dev = connect(engine)
-    api = TestClient(create_app(engine))
+    api = owner_client(create_app(engine))
     dev.fail_on = 1
     response = api.patch("/api/channels/A", json={"gain_db": -5})
     assert response.status_code == 400
@@ -175,7 +175,7 @@ def test_api_reports_write_failure_and_allows_explicit_recovery(engine):
 
 def test_api_rejects_duplicate_outputs_before_writing(engine):
     dev = connect(engine)
-    api = TestClient(create_app(engine))
+    api = owner_client(create_app(engine))
     data = engine.tune.model_dump(mode="json")
     data["channels"][-1]["id"] = "A"
     assert api.put("/api/tune", json=data).status_code == 422

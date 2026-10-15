@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
+from conftest import owner_client
 
 from helixtune import afpx, measurements
 from helixtune.api import create_app
@@ -51,7 +51,7 @@ def test_prediction_reflects_tune_change():
 
 
 def test_api_import_flow(tmp_path):
-    c = TestClient(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
+    c = owner_client(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
     with open(PRESETS / "M1-23122017-1405.afpx", "rb") as fh:
         r = c.post("/api/import/afpx", files={"file": ("M1-23122017-1405.afpx", fh)}).json()
     assert any("high-pass filter required" in p for p in r["safety_problems"])
@@ -66,7 +66,7 @@ def test_api_import_flow(tmp_path):
 
 
 def test_system_view(tmp_path):
-    c = TestClient(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
+    c = owner_client(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
     assert c.get("/api/system").json()["measurement_count"] == 0
     for name in ("Base - DRV-TA- No EQ.afpx", "BasicTune - DRV-TA.afpx"):
         with open(PRESETS / name, "rb") as fh:
@@ -82,7 +82,7 @@ def test_system_view(tmp_path):
 
 
 def test_proposals_and_ab(tmp_path):
-    c = TestClient(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
+    c = owner_client(create_app(Engine.from_param_map(load_at01(AT01), tmp_path)))
     for name in ("Base - DRV-TA- No EQ.afpx", "BasicTune - DRV-TA.afpx"):
         with open(PRESETS / name, "rb") as fh:
             c.post("/api/import/afpx", files={"file": (name, fh)})

@@ -7,9 +7,15 @@ handling, and makes no claim about actual HELIX addresses or protocol correctnes
 from itertools import count
 
 import pytest
+from fastapi.testclient import TestClient
 
 from helixtune.mapping import ChannelAddrs, DeviceMapping
 from helixtune.model import CHANNELS, EQ_BANDS
+
+
+def owner_client(app):
+    """Exercise real authentication with isolated test-only credentials."""
+    return TestClient(app, headers={"Authorization": f"Bearer {app.state.access.token('owner')}"})
 
 
 @pytest.fixture

@@ -102,6 +102,11 @@ class Engine:
             pol.write_text(self.policy.model_dump_json(indent=2))
         else:
             pol.write_text(self.policy.model_dump_json(indent=2))
+        protection_file = self.data_dir / "protections.json"
+        self.protections = (safety.OutputProtections.model_validate_json(protection_file.read_text())
+                            if protection_file.exists() else safety.OutputProtections())
+        # Migrate current tune + equipment conservatively; snapshots never own these floors.
+        self._persist_protections(self.tune)
 
     @classmethod
     def from_param_map(cls, pm: ParamMap, data_dir: Path) -> "Engine":
@@ -143,6 +148,7 @@ class Engine:
             if problems:
                 raise SafetyRejected(problems)
             img = self.mapping.render(tune)
+            self._persist_protections(tune)
             n = self._write_image(img, full=True)
             self._log("engine", "full push to device", n)
             return n
@@ -203,6 +209,7 @@ class Engine:
                 self._log(source, f"REJECTED: {summary}: {'; '.join(problems)}")
                 raise SafetyRejected(problems)
             img = self.mapping.render(new)  # raises MappingError if unrepresentable
+            self._persist_protections(new)
             writes = 0
             if self.client is not None and self.device.writes_enabled and self.device.baselined:
                 writes = self._write_image(img)
@@ -239,7 +246,12 @@ class Engine:
             return res
 
     def _adopt(self, t: Tune, source: str, summary: str) -> dict:
+        t = Tune.model_validate(t.model_dump())
+        problems = self._check(t)
+        if problems:
+            raise SafetyRejected(problems)
         img = self.mapping.render(t)
+        self._persist_protections(t)
         writes = 0
         if self.client is not None and self.device.writes_enabled and self.device.baselined:
             writes = self._write_image(img)
@@ -509,18 +521,67 @@ class Engine:
     # ---- equipment / system design ---------------------------------------------------------
 
     def save_design(self, d: equipment.SystemDesign | None = None) -> None:
-        if d is not None:
-            ids = {c.id for c in d.components}
-            for cn in d.connections:
-                if cn.src not in ids or cn.dst not in ids:
-                    raise EngineError(f"connection {cn.id} references a missing component")
-            self.design = d
-        (self.data_dir / "system.json").write_text(self.design.model_dump_json(indent=2))
-        self.revision += 1
+        with self._lock:
+            path = self.data_dir / "system.json"
+            proposed = d if d is not None else self.design
+            try:
+                ids = {c.id for c in proposed.components}
+                for component in proposed.components:
+                    for cid in component.channels:
+                        self.tune.channel(cid)
+                for cn in proposed.connections:
+                    if cn.src not in ids or cn.dst not in ids:
+                        raise ValueError(f"connection {cn.id} references a missing component")
+                protections = safety.tighten_outputs(self.tune, self.policy, self.protections,
+                                                      equipment.channel_driver_limits(proposed))
+            except (ValueError, KeyError) as exc:
+                # Existing endpoints edit in-memory design objects before saving.
+                # Restore the accepted design if protection-driving metadata is invalid.
+                self.design = equipment.SystemDesign.model_validate_json(path.read_text())
+                raise EngineError("Invalid system design or physical output protection specifications") from exc
+            self._save_protections(protections)
+            path.write_text(proposed.model_dump_json(indent=2))
+            self.design = proposed
+            self.revision += 1
 
     def _check(self, t: Tune, previous: Tune | None = None) -> list[str]:
         return safety.check(t, self.policy, previous=previous,
-                            driver_limits=equipment.channel_driver_limits(self.design))
+                            driver_limits=equipment.channel_driver_limits(self.design),
+                            protections=self.protections)
+
+    def _persist_protections(self, t: Tune) -> None:
+        with self._lock:
+            updated = safety.tighten_outputs(t, self.policy, self.protections,
+                                             equipment.channel_driver_limits(self.design))
+            self._save_protections(updated)
+
+    def _save_protections(self, value: safety.OutputProtections) -> None:
+        path = self.data_dir / "protections.json"
+        encoded = value.model_dump_json(indent=2)
+        if not path.exists() or path.read_text() != encoded:
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(encoded)
+            temporary.replace(path)
+        self.protections = value
+
+    def configure_output_protection(self, cid: str, value: safety.OutputProtection, confirm: str) -> dict:
+        """Deliberate owner configuration; HTTP authorization is enforced separately."""
+        with self._lock:
+            cid = self.tune.channel(cid).id
+            if self.client is not None:
+                raise EngineError("disconnect the device before changing physical output protections")
+            if confirm != "RECONFIGURE":
+                raise EngineError('physical output reconfiguration requires confirm="RECONFIGURE"')
+            updated = self.protections.model_copy(deep=True)
+            updated.outputs[cid] = safety.OutputProtection.model_validate(value.model_dump())
+            # Current roles/specifications still impose their own floors. Change stale
+            # metadata first, then explicitly reconfigure after physical equipment changes.
+            updated = safety.tighten_outputs(self.tune, self.policy, updated,
+                                             equipment.channel_driver_limits(self.design))
+            self._save_protections(updated)
+            self.revision += 1
+            self._log("owner", f"reconfigured physical output protection {cid}")
+            return self.protections.outputs[cid].model_dump()
 
     # ---- internals ------------------------------------------------------------------
 

@@ -84,9 +84,27 @@ def cmd_serve(args) -> int:
     from .engine import Engine
 
     eng = Engine.from_param_map(load_at01(find_param_map(args.at01)), Path(args.data).expanduser())
+    print("Owner UI: run 'helixtune open' in another terminal (use matching --data/--port).")
     if args.host not in ("127.0.0.1", "localhost"):
-        print(f"WARNING: listening on {args.host} — anyone on this network can change the tune")
+        print("Remote access requires credentials. Use a trusted network or an encrypted tunnel for HTTP.")
     uvicorn.run(create_app(eng), host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
+def cmd_open(args) -> int:
+    from pathlib import Path
+    from urllib.parse import urlencode
+    import webbrowser
+
+    from .access import read_token
+
+    # The fragment is never sent in HTTP requests; the UI removes it immediately
+    # and exchanges it for an HttpOnly session. Never print the credential URL.
+    token = read_token(Path(args.data).expanduser(), "owner")
+    url = f"http://127.0.0.1:{args.port}/#" + urlencode({"token": token})
+    if not webbrowser.open(url):
+        print("Could not open a browser; open the local UI and use the owner credential from the data directory.")
+        return 1
     return 0
 
 
@@ -111,6 +129,10 @@ def main(argv=None) -> int:
     s.add_argument("--data", default="~/.helixtune")
     s.add_argument("--at01")
     s.set_defaults(fn=cmd_serve)
+    o = sub.add_parser("open", help="open the local owner UI without printing credentials")
+    o.add_argument("--data", default="~/.helixtune")
+    o.add_argument("--port", type=int, default=8765)
+    o.set_defaults(fn=cmd_open)
     sub.add_parser("mcp", help="MCP stdio server (talks to a running `serve`)").set_defaults(fn=cmd_mcp)
     args = ap.parse_args(argv)
     return args.fn(args)

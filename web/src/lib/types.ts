@@ -22,6 +22,9 @@ export interface Device {
   last_error: string | null
 }
 export interface EngineEvent { ts: number; source: string; summary: string; writes: number }
+export interface OutputProtection {
+  min_hp_hz: number | null; min_hp_slope_db: number; max_lp_hz: number | null; fs_factor: number
+}
 export interface ProposalInfo { id: string; title: string; kind: string; changes: number; source: string }
 export interface ABState { A: string | null; B: string | null; active: 'A' | 'B' | null }
 export interface Status {

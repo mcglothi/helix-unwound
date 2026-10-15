@@ -20,3 +20,5 @@ src/helixtune/web/dist/
 .env
 .env.*
 !.env.example
+*.token
+.helixtune/

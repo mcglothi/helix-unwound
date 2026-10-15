@@ -11,6 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from .dsp.filters import EqType
 from .emulator import EmulatedDevice
@@ -21,6 +22,8 @@ from .protocol.client import Client
 from .targets import Target
 from . import equipment as eq
 from .media import Library
+from .access import AccessControl, COOKIE
+from .safety import OutputProtection
 
 WEB = Path(__file__).parent / "web"
 
@@ -53,6 +56,15 @@ class Connect(BaseModel):
 
 
 class Confirm(BaseModel):
+    confirm: str
+
+
+class SessionToken(BaseModel):
+    token: str = Field(..., min_length=1, max_length=512, repr=False)
+
+
+class ProtectionUpdate(BaseModel):
+    protection: OutputProtection
     confirm: str
 
 
@@ -123,11 +135,64 @@ def _fmt(d: dict) -> str:
 
 
 def _src(request: Request) -> str:
+    if request.state.principal == "agent":
+        return "agent"
     return request.headers.get("x-helixtune-source", "ui")
 
 
 def create_app(engine: Engine) -> FastAPI:
     app = FastAPI(title="helixtune", version="0.0.1")
+    access = AccessControl(engine.data_dir)
+    app.state.access = access
+
+    @app.middleware("http")
+    async def authorize(request: Request, call_next):
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        # A same-site cookie alone does not protect against another local port.
+        origin = request.headers.get("origin")
+        if request.method not in ("GET", "HEAD", "OPTIONS") and origin is not None:
+            if origin != str(request.base_url).rstrip("/"):
+                return JSONResponse({"detail": "Cross-origin mutations are not allowed"}, status_code=403)
+        if path == "/api/session" and request.method == "POST":
+            return await call_next(request)
+        authorization = request.headers.get("authorization")
+        if authorization is not None:
+            scheme, _, token = authorization.partition(" ")
+            principal = access.authenticate(token) if scheme.lower() == "bearer" else None
+        else:
+            # Browser sessions are owner-only; an agent token cannot masquerade as a cookie.
+            principal = access.authenticate(request.cookies.get(COOKIE, ""))
+            if principal != "owner":
+                principal = None
+        if principal is None:
+            return JSONResponse({"detail": "Authentication required"}, status_code=401,
+                                headers={"WWW-Authenticate": "Bearer"})
+        if authorization is None and request.method not in ("GET", "HEAD", "OPTIONS"):
+            if origin != str(request.base_url).rstrip("/"):
+                return JSONResponse({"detail": "Browser mutations require a same-origin request"}, status_code=403)
+        request.state.principal = principal
+        if principal == "agent" and request.method not in ("GET", "HEAD", "OPTIONS"):
+            if path.startswith(("/api/device/", "/api/protections/")) or path == "/api/session":
+                return JSONResponse({"detail": "Owner capability required"}, status_code=403)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/session")
+    def start_session(value: SessionToken):
+        if access.authenticate(value.token) != "owner":
+            raise HTTPException(401, "Valid owner credential required")
+        response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+        response.set_cookie(COOKIE, value.token, httponly=True, samesite="strict")
+        return response
+
+    @app.delete("/api/session")
+    def end_session():
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE)
+        return response
 
     @app.exception_handler(SafetyRejected)
     async def _safety(_, e: SafetyRejected):
@@ -172,6 +237,14 @@ def create_app(engine: Engine) -> FastAPI:
     def get_safety():
         return engine.policy
 
+    @app.get("/api/protections")
+    def get_protections():
+        return engine.protections
+
+    @app.put("/api/protections/{cid}")
+    def configure_protection(cid: str, update: ProtectionUpdate):
+        return engine.configure_output_protection(cid, update.protection, update.confirm)
+
     @app.get("/api/safety/check")
     def check_safety(snapshot: str | None = None):
         """Problems the current tune (or a saved snapshot) has under the policy and recorded driver specs."""
@@ -200,10 +273,13 @@ def create_app(engine: Engine) -> FastAPI:
         return engine.edit(_src(request), f"{cid.upper()}: {_fmt(fields)}", f)
 
     @app.put("/api/channels/{cid}/{which}")
-    def put_crossover(cid: str, which: Literal["hp", "lp"], xo: Crossover | None, request: Request):
+    async def put_crossover(cid: str, which: Literal["hp", "lp"], request: Request, xo: Crossover | None = None):
+        if not await request.body():
+            raise HTTPException(422, "Supply a crossover object or explicit JSON null to bypass")
         engine.tune.channel(cid)
-        return engine.edit(_src(request), f"{cid.upper()} {which}: {_fmt(xo.model_dump(mode='json')) if xo else 'off'}",
-                           lambda t: setattr(t.channel(cid), which, xo))
+        return await run_in_threadpool(engine.edit, _src(request),
+                                       f"{cid.upper()} {which}: {_fmt(xo.model_dump(mode='json')) if xo else 'off'}",
+                                       lambda t: setattr(t.channel(cid), which, xo))
 
     @app.patch("/api/channels/{cid}/eq/{band}")
     def patch_band(cid: str, band: int, p: BandPatch, request: Request):
@@ -542,8 +618,6 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.post("/api/device/push-full")
     def push_full(c: Confirm, request: Request):
-        if _src(request) == "agent":
-            raise HTTPException(403, "full overwrite must be done by a person in the UI or CLI")
         return {"writes": engine.push_full(c.confirm)}
 
     # ---- UI -----------------------------------------------------------------------------

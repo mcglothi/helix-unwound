@@ -95,3 +95,27 @@ def test_intentional_public_surfaces_stay_public(clients):
     assert anon.get("/api/status").status_code == 401
     assert anon.post("/api/session", json={"token": "x" * 40}).status_code == 401  # reachable, rejects bad token
 
+
+def test_concurrent_saves_under_one_name_cannot_both_win(clients):
+    import threading
+
+    from helixtune.engine import SnapshotExists
+
+    engine, _, _, _ = clients
+    results, barrier = [], threading.Barrier(8)
+
+    def save(i):
+        engine.tune.notes = f"writer {i}"
+        barrier.wait()
+        try:
+            engine.save_snapshot("Race")
+            results.append("ok")
+        except SnapshotExists:
+            results.append("exists")
+
+    threads = [threading.Thread(target=save, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count("ok") == 1 and results.count("exists") == 7

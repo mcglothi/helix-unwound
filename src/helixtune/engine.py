@@ -7,6 +7,7 @@ agent always see and change the same state.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -278,17 +279,26 @@ class Engine:
     def snapshot_name(name: str, default: str = "snapshot") -> str:
         return "".join(c for c in name if c.isalnum() or c in "-_ ").strip() or default
 
-    def _claim_snapshot(self, safe: str, overwrite: bool) -> Path:
+    def _write_snapshot(self, safe: str, text: str, overwrite: bool) -> None:
+        """Create a scene file atomically. Without overwrite, O_EXCL guarantees that exactly one
+        of several concurrent writers wins; with overwrite, a temp file replaces the old one."""
         path = self.data_dir / "snapshots" / f"{safe}.json"
-        if path.exists() and not overwrite:
-            raise SnapshotExists(safe)
-        return path
+        if overwrite:
+            tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(text)
+            os.replace(tmp, path)
+            return
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            raise SnapshotExists(safe) from None
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
 
     def save_snapshot(self, name: str, overwrite: bool = False) -> str:
         safe = self.snapshot_name(name)
-        path = self._claim_snapshot(safe, overwrite)
         t = self.tune.model_copy(update={"name": safe})
-        path.write_text(t.model_dump_json(indent=2))
+        self._write_snapshot(safe, t.model_dump_json(indent=2), overwrite)
         self._log("engine", f"saved snapshot {safe}")
         return safe
 
@@ -322,7 +332,7 @@ class Engine:
         tune.name = name or tune.name
         tune.notes = f"imported from {rep.source} (PC-Tool {rep.version}, saved {rep.date})"
         safe = self.snapshot_name(tune.name, "imported")
-        self._claim_snapshot(safe, overwrite).write_text(tune.model_dump_json(indent=2))
+        self._write_snapshot(safe, tune.model_dump_json(indent=2), overwrite)
         problems = self._check(tune)
         self._log("engine", f"imported preset {safe}" + (f" ({len(problems)} safety issues)" if problems else ""))
         return {"snapshot": safe, "warnings": rep.warnings, "safety_problems": problems}

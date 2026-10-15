@@ -185,11 +185,21 @@ class AppState {
     this.preview = null
     this.proposalConflicts = []
   }
-  async applyProposal() {
-    if (!this.proposal) return
+  /** Close the card only when the engine accepted it; a refusal keeps it open with its reasons. */
+  async applyProposal(): Promise<boolean> {
+    if (!this.proposal) return false
     const id = this.proposal.id
-    await this.run(api('POST', `/api/proposals/${id}/apply`))
+    try {
+      await api('POST', `/api/proposals/${id}/apply`)
+    } catch (e: any) {
+      if (e?.status === 409 && Array.isArray(e?.body?.conflicts)) this.proposalConflicts = e.body.conflicts
+      else this.toast(e?.message ?? String(e))
+      await this.poll()
+      return false
+    }
     this.closeProposal()
+    await this.poll()
+    return true
   }
   async discardProposal() {
     if (!this.proposal) return

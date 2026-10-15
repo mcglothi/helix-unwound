@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../state.svelte'
+  import { canApply } from '../proposal'
 
   const p = $derived(app.proposal)
   const fromAgent = $derived(p?.source === 'agent')
@@ -28,7 +29,7 @@
     {/if}
     <div class="actions">
       <button class="ghost" onclick={() => app.discardProposal()}>Discard</button>
-      <button class="primary" disabled={!p.edits.length || app.proposalConflicts.length > 0} onclick={() => app.applyProposal()}>
+      <button class="primary" disabled={!canApply(p, app.proposalConflicts)} onclick={() => app.applyProposal()}>
         Apply{app.status?.device.writes_enabled && app.status?.device.baselined ? ' to DSP' : ''}
       </button>
     </div>

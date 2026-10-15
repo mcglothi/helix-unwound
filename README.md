@@ -1,4 +1,6 @@
-# helixtune
+# Helix Unwound
+
+A community-built second life for the HELIX DSP PRO MK2.
 
 Open replacement for Audiotec Fischer's Windows-only DSP PC-Tool, for the
 **HELIX DSP PRO MK2**: a headless tuning engine with a web UI (desktop and phone)
@@ -89,7 +91,9 @@ tunes and equipment specifications migrate on startup; later accepted roles and
 specifications can tighten limits. Relabeling a driver, muting it, deleting a
 specification, or restoring a scene cannot silently relax those limits. To change
 physical equipment, disconnect the device, correct its role/specifications, then
-deliberately reconfigure its limits in Studio's output protection panel. Current
+review and clear obsolete constraints individually, with a reason, in Studio's
+output limits panel. Pending constraints enforce immediately; owner confirmation
+is separate from editable source metadata. Current
 roles/specifications can still impose stricter limits. These are conservative
 configuration checks, not proof of speaker protection or verified hardware behavior.
 

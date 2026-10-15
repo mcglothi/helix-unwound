@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-16
-Status: ✅ Foundation milestones 1–3 complete (3 = proposal binding + route capabilities, by Claude); awaiting Codex review
+Status: Milestone 3 + corrective checkpoint complete (Claude); awaiting Codex acceptance review
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -28,6 +28,7 @@ Branch: `pi/helixtune-foundation`
 - `7f2636d` — foundation milestone 2: persisted physical-output protection floors, authenticated owner/agent capabilities, owner sign-in/open command, offline protection editor, and regression coverage. A handoff-only commit follows; use `git log` for the tip.
 - `39aed64` — milestone 3A (Claude): proposals bound to field before-values and context (target, measurements, driver identity); measurement driver provenance with owner attestation; stale/unknown measurements refused for optimisation.
 - `6dd81aa` — milestone 3B (Claude): route-declared capabilities (agent writes opt-in via `@agent_allowed`, new routes owner-only), owner-only deletions/attestation, no silent scene overwrites.
+- `cbd80f1`, `130087e`, `a7ff2ff`, `1b402ae` — milestone 3 corrections after Codex review: solver-input + trusted-target binding, default authentication outside `/api`, refused proposals stay open in the UI, atomic scene creation.
 
 ## Milestone 1: device writes and physical channel identity
 
@@ -95,9 +96,17 @@ Validation at milestone 3:
 - **17 frontend tests passed**; Svelte/TS **0 errors, 0 warnings**; build passed. `git diff --check` clean.
 - Falsified: removing the field-conflict check fails 2 conflict tests; disabling the route capability check fails 2 capability tests. No hardware, no server restart, no user state used.
 
+Corrections after Codex review (`cbd80f1`…`1b402ae`):
+- Proposal context also binds a fingerprint of solver-consumed settings (role, hp/lp, EQ, gain, mute, routing) for every affected and contributing channel; names/presentation stay mergeable. Alignment binds driver identity of every measured channel.
+- Solver targets are explicit: auto-EQ uses the target **shape** only; level proposals anchor to the predicted system from **trusted, non-overlapping** measurements (current provenance; single-channel and newest first). The exact target array is fingerprinted and recomputed at preview/apply. Without a trusted anchor, level proposals are refused with a reason. Untrusted measurements cannot change a solver target.
+- Middleware authenticates **every** path except an explicit public surface (static UI shell/assets/manifest, POST `/api/session`); public endpoints must also be marked `@public_route`. Undecorated non-`/api` routes: anonymous 401, agent 403.
+- UI keeps a refused proposal open with its conflict reasons; `canApply()` gates the button; frontend regression with a mocked 409.
+- Scene files are created with `O_EXCL` (exactly one concurrent writer wins); owner overwrite uses temp + `os.replace`.
+- Validation: **150 Python** passed locally; **125 passed / 25 skipped** from a clean archive; **20 frontend** tests; Svelte/TS 0/0; build OK; each commit's own suite passed at that commit. Every fix falsified (input check off, anchor trusting everything, old public-prefix rule, unconditional close, and the concurrency test failed before the fix).
+
 Known holes after milestone 3:
 - No owner UI to list measurements or attest provenance yet; until then Tim's 2018 measurements are refused for auto-EQ (only API attestation exists).
-- Target level-matching (`_target_on_grid` via `system_view`) still uses every seat measurement, including stale/unknown ones (prediction-honesty milestone).
+- The **display** system view (`/api/system`) still sums every seat measurement, including stale/unknown ones; solvers no longer use it (prediction-honesty milestone).
 - Agents can no longer delete wiring, so MCP can add but not rewire connections; owner canvas unaffected.
 - Agents can still edit roles/equipment specs that tighten persistent floors (protection-provenance milestone).
 - Attestation snapshots the whole current design for a measurement's channels; it does not yet bind individual spec values (needed for protection attestations, not measurement provenance).

@@ -1,7 +1,7 @@
 # helixTune handoff
 
-Last Updated: 2026-10-16
-Status: Milestone 3 + corrective checkpoint complete (Claude); awaiting Codex acceptance review
+Last Updated: 2026-10-15
+Status: ✅ Milestone 3 corrections accepted; milestone 4 capture-hardware review complete
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -29,6 +29,7 @@ Branch: `pi/helixtune-foundation`
 - `39aed64` — milestone 3A (Claude): proposals bound to field before-values and context (target, measurements, driver identity); measurement driver provenance with owner attestation; stale/unknown measurements refused for optimisation.
 - `6dd81aa` — milestone 3B (Claude): route-declared capabilities (agent writes opt-in via `@agent_allowed`, new routes owner-only), owner-only deletions/attestation, no silent scene overwrites.
 - `cbd80f1`, `130087e`, `a7ff2ff`, `1b402ae` — milestone 3 corrections after Codex review: solver-input + trusted-target binding, default authentication outside `/api`, refused proposals stay open in the UI, atomic scene creation.
+- `3495766` — milestone 4 (Codex): Measurements library, explicit capture-time identities/evidence, audited corrections, capture-context invalidation, and exclusion of unknown-baseline measurements from level anchors. A handoff-only commit follows this implementation checkpoint.
 
 ## Milestone 1: device writes and physical channel identity
 
@@ -105,12 +106,35 @@ Corrections after Codex review (`cbd80f1`…`1b402ae`):
 - Validation: **150 Python** passed locally; **125 passed / 25 skipped** from a clean archive; **20 frontend** tests; Svelte/TS 0/0; build OK; each commit's own suite passed at that commit. Every fix falsified (input check off, anchor trusting everything, old public-prefix rule, unconditional close, and the concurrency test failed before the fix).
 
 Known holes after milestone 3:
-- No owner UI to list measurements or attest provenance yet; until then Tim's 2018 measurements are refused for auto-EQ (only API attestation exists).
+- The missing owner measurement/provenance UI was addressed in milestone 4 below. Historical hardware is not inferred or silently replaced with today's drivers.
 - The **display** system view (`/api/system`) still sums every seat measurement, including stale/unknown ones; solvers no longer use it (prediction-honesty milestone).
 - Agents can no longer delete wiring, so MCP can add but not rewire connections; owner canvas unaffected.
 - Agents can still edit roles/equipment specs that tighten persistent floors (protection-provenance milestone).
-- Attestation snapshots the whole current design for a measurement's channels; it does not yet bind individual spec values (needed for protection attestations, not measurement provenance).
+- Measurement HTTP attestation now requires explicit capture identities/evidence (milestone 4). Protection attestation still needs individual value/unit/source binding, a separate model.
 - Proposals remain in memory only (lost on restart).
+
+Codex acceptance of corrective checkpoint:
+- Reviewed the four corrective commits and reran **150 Python / 20 frontend tests**, with clean Svelte/TS checks. Accepted the five requested corrections: solver dependencies/trusted targets, default authentication outside the path prefix, retained UI conflicts, and exclusive scene creation.
+- Agreed auto-EQ target shape does not need level anchoring because the fitter removes the level offset. Level matching requires a trustworthy reference and remains dependent on its actual contributing measurements/settings.
+- Claude released ownership and Tim asked Codex to take the next stretch. No server restart, push, or hardware access.
+
+## Milestone 4: explicit historical-aware measurement review
+
+✅ COMPLETE (Codex)
+
+- Added a Measurements navigation/view with capture date/source, output and seat tags, captured tune, hardware status, installed-vs-captured driver comparison, and owner review history. Historical/unidentified hardware is visibly separate from current hardware.
+- Unknown captures start blank; reviewing today's installation is an explicit action, followed by evidence and owner confirmation. Manual historical rows keep independent identities. GB60 capture records remain historical against GS690 equipment; correcting a record requires an explicit flag and preserves old identities/reason.
+- `POST /api/measurements/{id}/attest` is still owner-only and now **requires** explicit `drivers`, `reason`, and `expected_fingerprint`; a bare request returns 422. It cannot silently copy today's installation. Trusted in-process shorthand remains for existing local callers/tests and is not exposed over HTTP.
+- Owner corrections and context invalidations append `driver_history`. Changing capture outputs, seat, or attached tune clears confirmation while preserving prior records; presentation-only edits do not. Metadata mutations/attestation/deletion share the engine lock. Measurement writes use temporary-file replacement.
+- `GET /api/measurements` and `GET /api/measurements/{id}` return enriched metadata without raw arrays. The library can edit tags/details and attach or clear the capture-time tune. Changing these records never changes the active tune or installed equipment.
+- Measurements without a known capture-time tune are excluded from solver level anchors, even when driver identities match. Owner evidence is not independent proof of historical truth; the UI deliberately does not offer a silent 'make eligible' operation.
+- See `docs/MEASUREMENTS.md` for workflow and the attestation API change. Existing integration tests now declare synthetic capture identities rather than treating imported historical files as today's hardware by default.
+
+Validation:
+- **166 Python tests passed**, no skips with local private inputs. **141 passed / 25 skipped** from a clean archive without vendor inputs, backups, or built UI.
+- **25 frontend tests passed**, including blank historical drafts, preserved identities, review/evidence requirements and explicit correction. Svelte/TS **0 errors, 0 warnings**; production build passed.
+- Diff whitespace/staged credential checks passed. No user-state test, device connection, hardware writes, server restart, or push. Browser/phone rendered acceptance remains outstanding.
+- The old Claude-launched server on :8765 still uses pre-milestone-2 Python against `~/.helixtune`. **Leave restart/migration to Tim's explicit call**, especially while protection provenance remains inferred. Test future changes with temporary state; do not use the existing server to validate this UI/API.
 
 ## Next tasks
 
@@ -136,7 +160,7 @@ These are review recommendations, not approval for every proposed product featur
 - “Synchronized” only means all write requests returned responses accepted by the current client. ACK content, atomicity, safeload, and readback remain unverified; this is not a hardware-verified tune.
 - No automatic device mute or rollback is attempted after transport failure. Uncertainty can include partially applied filters. User must review and deliberately resynchronize.
 - The network API now enforces owner/agent capabilities, but same-user local processes that can read owner files can assume owner authority. Direct engine/CLI operations are trusted local operations; this is not an OS sandbox.
-- Aggregate filter headroom, safe power/excursion, stale proposals, and prediction issues remain open. These milestones do not establish speaker protection or public-release readiness.
+- Aggregate filter headroom, safe power/excursion, and prediction-display issues remain open. Proposal conflict protection is implemented, but future solver dependencies must be added to its binding. These milestones do not establish speaker protection or public-release readiness.
 - Auth uses long-lived role credentials, not per-agent identities or expiring sessions. HTTP is unencrypted; use trusted networking/encrypted tunnels for remote access. See `docs/ACCESS.md` for rotation and remaining pairing work.
 - Stricter protection floors are persisted before writes; they may remain after a failed tune update. Deliberate offline owner reconfiguration is the only supported relaxation path.
 - Current state persistence uses direct file writes; crash-safe storage and full history reconstruction remain future work.

@@ -101,3 +101,10 @@ export function sourceOf(mix: Record<string, number>): Source {
   return 'custom'
 }
 export const SOURCE_LABEL: Record<Source, string> = { L: 'Left', R: 'Right', mono: 'Mono L+R', off: 'Off', custom: 'Custom mix' }
+
+export interface ProtectionConstraint {
+  id: string; output: string; field: 'min_hp_hz' | 'min_hp_slope_db' | 'max_lp_hz' | 'fs_factor'
+  value: number; unit: string; source: Record<string, unknown>; current: boolean
+  state: 'pending' | 'confirmed' | 'cleared'; fingerprint: string
+  history: { action: string; actor: string; reason: string; at: number }[]
+}

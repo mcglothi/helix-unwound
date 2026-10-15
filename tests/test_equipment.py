@@ -63,8 +63,11 @@ def test_recorded_fs_tightens_safety(tmp_path):
     # Removing specs cannot silently relax a physical-output floor.
     c.patch(f"/api/equipment/{spk['id']}", json={"specs": {"fs": None}})
     assert c.put("/api/channels/E/hp", json={"type": "linkwitz_riley", "slope_db": 24, "freq_hz": 1800}).status_code == 409
-    assert c.put("/api/protections/E", json={"protection": {"min_hp_hz": 1500, "fs_factor": 2},
-                                           "confirm": "RECONFIGURE"}).status_code == 200
+    for item in c.get('/api/protections').json()['constraints'].values():
+        if item['output'] == 'E' and not item['current']:
+            assert c.post(f"/api/protections/constraints/{item['id']}/review", json={
+                'action': 'clear', 'reason': 'Incorrect old source removed',
+                'expected_fingerprint': item['fingerprint']}).status_code == 200
     assert c.put("/api/channels/E/hp", json={"type": "linkwitz_riley", "slope_db": 24, "freq_hz": 1800}).status_code == 200
     # wiring integrity
     assert c.post("/api/connections", json={"src": spk["id"], "dst": "nope", "signal": "speaker"}).status_code == 404

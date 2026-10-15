@@ -17,6 +17,7 @@ from typing import Literal
 import numpy as np
 
 from . import afpx, autotune, equipment, mapping, measurements, safety, targets
+from . import protection_provenance as provenance
 from .proposals import Proposal, ProposalConflict, ProposalContext, fingerprint
 from .devicefile import ParamMap
 from .model import Tune
@@ -118,8 +119,8 @@ class Engine:
         else:
             pol.write_text(self.policy.model_dump_json(indent=2))
         protection_file = self.data_dir / "protections.json"
-        self.protections = (safety.OutputProtections.model_validate_json(protection_file.read_text())
-                            if protection_file.exists() else safety.OutputProtections())
+        self.protection_book = provenance.load(protection_file.read_text() if protection_file.exists() else None)
+        self.protections = self.protection_book.effective()
         # Migrate current tune + equipment conservatively; snapshots never own these floors.
         self._persist_protections(self.tune)
 
@@ -792,8 +793,7 @@ class Engine:
                 for cn in proposed.connections:
                     if cn.src not in ids or cn.dst not in ids:
                         raise ValueError(f"connection {cn.id} references a missing component")
-                protections = safety.tighten_outputs(self.tune, self.policy, self.protections,
-                                                      equipment.channel_driver_limits(proposed))
+                protections = provenance.reconcile(self.protection_book, self.tune, self.policy, proposed)
             except (ValueError, KeyError) as exc:
                 # Existing endpoints edit in-memory design objects before saving.
                 # Restore the accepted design if protection-driving metadata is invalid.
@@ -811,37 +811,47 @@ class Engine:
 
     def _persist_protections(self, t: Tune) -> None:
         with self._lock:
-            updated = safety.tighten_outputs(t, self.policy, self.protections,
-                                             equipment.channel_driver_limits(self.design))
+            updated = provenance.reconcile(self.protection_book, t, self.policy, self.design)
             self._save_protections(updated)
 
-    def _save_protections(self, value: safety.OutputProtections) -> None:
+    def _save_protections(self, value: provenance.ProtectionBook) -> None:
         path = self.data_dir / "protections.json"
         encoded = value.model_dump_json(indent=2)
         if not path.exists() or path.read_text() != encoded:
             temporary = path.with_suffix(".tmp")
             temporary.write_text(encoded)
             temporary.replace(path)
-        self.protections = value
+        self.protection_book = value
+        self.protections = value.effective()
 
     def configure_output_protection(self, cid: str, value: safety.OutputProtection, confirm: str) -> dict:
-        """Deliberate owner configuration; HTTP authorization is enforced separately."""
+        """Retired bulk operation; retain an explicit error for older clients."""
         with self._lock:
             cid = self.tune.channel(cid).id
             if self.client is not None:
                 raise EngineError("disconnect the device before changing physical output protections")
             if confirm != "RECONFIGURE":
                 raise EngineError('physical output reconfiguration requires confirm="RECONFIGURE"')
-            updated = self.protections.model_copy(deep=True)
-            updated.outputs[cid] = safety.OutputProtection.model_validate(value.model_dump())
-            # Current roles/specifications still impose their own floors. Change stale
-            # metadata first, then explicitly reconfigure after physical equipment changes.
-            updated = safety.tighten_outputs(self.tune, self.policy, updated,
-                                             equipment.channel_driver_limits(self.design))
+            raise EngineError("Bulk protection replacement is retired; review and clear each retained constraint with a reason")
+
+    def protection_view(self) -> dict:
+        with self._lock:
+            return self.protection_book.view()
+
+    def review_protection(self, key: str, action: Literal["confirm", "clear"], reason: str,
+                          expected_fingerprint: str) -> dict:
+        with self._lock:
+            if action == "clear" and self.client is not None:
+                raise EngineError("disconnect the device before clearing a physical output constraint; disconnect does not silence the DSP")
+            try:
+                updated = provenance.reconcile(self.protection_book, self.tune, self.policy, self.design)
+                updated = provenance.review(updated, key, action, reason, expected_fingerprint)
+            except (KeyError, ValueError) as exc:
+                raise EngineError(str(exc)) from exc
             self._save_protections(updated)
             self.revision += 1
-            self._log("owner", f"reconfigured physical output protection {cid}")
-            return self.protections.outputs[cid].model_dump()
+            self._log("owner", f"{action} physical output constraint {key}: {reason.strip()}")
+            return self.protection_book.view()
 
     # ---- internals ------------------------------------------------------------------
 

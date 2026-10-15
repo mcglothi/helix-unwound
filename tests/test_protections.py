@@ -105,7 +105,7 @@ def test_legacy_tune_migrates_without_changing_the_tune(tmp_path, synthetic_mapp
 def test_corrupt_or_future_protection_file_fails_closed(engine, synthetic_mapping):
     path = engine.data_dir / "protections.json"
     value = json.loads(path.read_text())
-    value["version"] = 2
+    value["version"] = 999
     path.write_text(json.dumps(value))
     with pytest.raises(ValidationError):
         Engine(mapping=synthetic_mapping, data_dir=engine.data_dir)
@@ -144,15 +144,20 @@ def test_explicit_reconfiguration_requires_confirmation_and_disconnect(engine):
     with pytest.raises(EngineError, match="disconnect"):
         engine.configure_output_protection("A", empty, "RECONFIGURE")
     engine.detach()
-    engine.configure_output_protection("A", empty, "RECONFIGURE")
+    with pytest.raises(EngineError, match="Bulk protection"):
+        engine.configure_output_protection("A", empty, "RECONFIGURE")
+    for item in list(engine.protection_book.constraints.values()):
+        engine.review_protection(item.id, 'clear', 'Old driver removed; wiring checked', item.review_fingerprint)
     engine.edit("test", "remove old crossover", lambda t: setattr(t.channel("A"), "hp", None))
     assert engine.protections.outputs["A"].min_hp_hz is None
 
 
 def test_reconfiguration_cannot_override_current_driver_role(engine):
     protect_tweeter(engine)
-    result = engine.configure_output_protection("A", safety.OutputProtection(), "RECONFIGURE")
-    assert result["min_hp_hz"] == 1500
+    item = next(c for c in engine.protection_book.constraints.values() if c.field == 'min_hp_hz')
+    with pytest.raises(EngineError, match="source first"):
+        engine.review_protection(item.id, 'clear', 'try bypass', item.review_fingerprint)
+    assert engine.protections.outputs['A'].min_hp_hz == 1500
 
 
 def test_impossible_equipment_limit_does_not_poison_saved_design(engine, synthetic_mapping):

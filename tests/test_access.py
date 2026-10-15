@@ -121,7 +121,12 @@ def test_agent_cannot_erase_limits_via_role_and_equipment_metadata(clients):
     assert owner.post("/api/device/connect", json={"port": "emulator"}).status_code == 200
     assert owner.put("/api/protections/A", json={"protection": {}, "confirm": "RECONFIGURE"}).status_code == 400
     owner.post("/api/device/disconnect")
-    assert owner.put("/api/protections/A", json={"protection": {}, "confirm": "RECONFIGURE"}).status_code == 200
+    assert owner.put("/api/protections/A", json={"protection": {}, "confirm": "RECONFIGURE"}).status_code == 400
+    for item in owner.get('/api/protections').json()['constraints'].values():
+        assert not item['current']
+        body = {'action': 'clear', 'reason': 'Old installation removed; wiring checked', 'expected_fingerprint': item['fingerprint']}
+        assert agent.post(f"/api/protections/constraints/{item['id']}/review", json=body).status_code == 403
+        assert owner.post(f"/api/protections/constraints/{item['id']}/review", json=body).status_code == 200
     assert agent.put("/api/channels/A/hp", content="null", headers={"Content-Type": "application/json"}).status_code == 200
 
 

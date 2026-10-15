@@ -68,7 +68,9 @@ is no credential-management endpoint or per-agent attribution/revocation yet.
 
 ## Persistent physical output limits
 
-The engine creates version 1 `protections.json`, keyed by physical outputs A–J.
+The engine creates version 2 `protections.json` with individually reviewed constraints
+and effective limits keyed by physical outputs A–J. Version 1 aggregate limits
+migrate to pending legacy records without claiming owner confirmation.
 On upgrade it derives conservative limits from the current tune and equipment;
 it does not rewrite the tune or infer physical wiring from old snapshots.
 Malformed or unknown-version protection files stop startup instead of being reset.
@@ -92,15 +94,23 @@ To change a physical driver:
 1. Disconnect the device in the workstation (read-only connections count too).
 2. Correct stale role labels and equipment specifications; mute the output for
    offline setup if its staged filters do not satisfy the retained limits.
-3. Open Studio's output protection panel, enter the intended limits, and confirm
-   reconfiguration. This owner-only operation replaces that output's saved record.
-4. Current roles/specifications are reapplied as minimum constraints. Review
-   `/api/safety/check` and tune settings before any reconnect/full overwrite.
+3. Open Studio's output limits panel. Review each source and supply evidence to
+   confirm current constraints. Pending constraints already enforce immediately.
+4. Clear obsolete retained constraints individually, with a reason, after their
+   sources have been corrected/removed. There is no bulk replacement/reset.
+5. Review `/api/safety/check` and tune settings before any reconnect/full overwrite.
 
-The API equivalent is `PUT /api/protections/{cid}` with an owner credential and
-body `{"protection": {...}, "confirm": "RECONFIGURE"}`. The protection object is a
-replacement: omitted fields take their defaults. No device write occurs when
-reconfiguring these settings.
+Software disconnect does not silence the DSP. Agent-editable source strings never
+confer owner authority. Changing a confirmed source invalidates confirmation but
+retains its prior limit as pending. Review history survives source deletion and
+restart. See [PROTECTIONS.md](PROTECTIONS.md) for precise bindings and migration.
+
+The API operation is owner-only
+`POST /api/protections/constraints/{id}/review`, with `action` (`confirm`/`clear`),
+nonblank `reason`, and `expected_fingerprint` from `GET /api/protections`.
+The old `PUT /api/protections/{cid}` refuses bulk replacement. No device write
+occurs during review. Source units are bound for review, not converted; known
+frequency specifications must be recorded in Hz and slope in dB/oct.
 
 ## Validation
 
@@ -108,5 +118,5 @@ Tests use temporary directories and synthetic addresses. Access regressions cove
 anonymous requests, real owner/agent credentials, source-header spoofing, cookies,
 cross-origin mutations, bootstrap handling, and MCP credential selection. Protection
 regressions cover migration, persistence, all adoption paths, role/spec removal,
-muting, explicit reconfiguration, and invalid equipment data. Hardware verification
+muting, individual review/clearing, source invalidation, and invalid equipment data. Hardware verification
 and rendered browser/phone acceptance are separate outstanding checks.

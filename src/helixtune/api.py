@@ -70,6 +70,12 @@ class ProtectionUpdate(BaseModel):
     confirm: str
 
 
+class ProtectionReview(BaseModel):
+    action: Literal['confirm', 'clear']
+    reason: str = Field(min_length=1, max_length=2000)
+    expected_fingerprint: str = Field(min_length=64, max_length=64)
+
+
 class SnapshotName(BaseModel):
     name: str
 
@@ -315,7 +321,11 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.get("/api/protections")
     def get_protections():
-        return engine.protections
+        return engine.protection_view()
+
+    @app.post("/api/protections/constraints/{key}/review")
+    def review_protection(key: str, review: ProtectionReview):
+        return engine.review_protection(key, review.action, review.reason, review.expected_fingerprint)
 
     @app.put("/api/protections/{cid}")
     def configure_protection(cid: str, update: ProtectionUpdate):

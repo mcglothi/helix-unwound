@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-15
-Status: ✅ Milestone 3 corrections accepted; milestone 4 capture-hardware review complete
+Status: ✅ Milestone 5 protection provenance complete; ready for Claude review
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -109,8 +109,8 @@ Known holes after milestone 3:
 - The missing owner measurement/provenance UI was addressed in milestone 4 below. Historical hardware is not inferred or silently replaced with today's drivers.
 - The **display** system view (`/api/system`) still sums every seat measurement, including stale/unknown ones; solvers no longer use it (prediction-honesty milestone).
 - Agents can no longer delete wiring, so MCP can add but not rewire connections; owner canvas unaffected.
-- Agents can still edit roles/equipment specs that tighten persistent floors (protection-provenance milestone).
-- Measurement HTTP attestation now requires explicit capture identities/evidence (milestone 4). Protection attestation still needs individual value/unit/source binding, a separate model.
+- Agents can edit roles/equipment specs that tighten limits; milestone 5 now distinguishes durable pending constraints from owner-confirmed sources.
+- Measurement HTTP attestation requires explicit capture identities/evidence (milestone 4). Protection review now has separate individual value/unit/source bindings (milestone 5).
 - Proposals remain in memory only (lost on restart).
 
 Codex acceptance of corrective checkpoint:
@@ -136,9 +136,26 @@ Validation:
 - Diff whitespace/staged credential checks passed. No user-state test, device connection, hardware writes, server restart, or push. Browser/phone rendered acceptance remains outstanding.
 - The old Claude-launched server on :8765 still uses pre-milestone-2 Python against `~/.helixtune`. **Leave restart/migration to Tim's explicit call**, especially while protection provenance remains inferred. Test future changes with temporary state; do not use the existing server to validate this UI/API.
 
+## Milestone 5: durable pending constraints and owner review
+
+✅ COMPLETE (Codex; independent Claude review pending)
+
+- `protections.json` version 2 stores individual pending/confirmed/cleared constraints with immutable source payloads and review history. Effective A–J output limits remain available to existing safety checks/API consumers.
+- New metadata enforces immediately but cannot claim owner confirmation, even if an agent writes `manufacturer+confirmed` into source text. Only the owner review endpoint confirms exact records, with evidence and a fingerprint binding the current review state.
+- Source value/unit/reference, driver ID/make/model/serial/assignment, or relevant role/policy changes invalidate confirmation. The prior limit remains enforced as pending; any replacement source starts pending. Presentation-only names/notes/positions remain mergeable. Returning old sources cannot restore confirmation.
+- Clearing is per constraint, requires a reason and no attached device, and preserves history. Current sources must be corrected/removed first, so review cannot override live role/spec rules. Reintroducing a cleared source reactivates it as pending. The old bulk PUT/direct-engine replacement refuses operation rather than bypassing review.
+- Version 1 aggregate limits migrate to pending legacy records with unknown original provenance, without rewriting tune bytes or lowering limits. Malformed/unsupported or source-fingerprint-corrupt protection state fails closed. Invalid numeric equipment metadata restores the last accepted design.
+- Inspector now shows effective limits, pending counts, exact source records, changed/removed sources, individual confirmation/clearing, and review history. See `docs/PROTECTIONS.md` and updated `docs/ACCESS.md`.
+- Known numerical semantics remain provisional: source unit strings are bound for review, not automatically converted. Known frequency specs must be recorded as Hz; slope as dB/oct. No proof of hardware behavior or speaker safety is implied.
+
+Validation:
+- **186 Python tests passed** locally; **161 passed / 25 skipped** from a clean staged Git archive without vendor files, personal backups or built UI. Includes 20 new synthetic provenance cases.
+- **28 frontend tests passed**; Svelte/TS **0 errors, 0 warnings**; production build passed. Diff whitespace check clean.
+- No hardware/device access (tests use emulator only), user-state testing, server restart/migration, push, or publication. Rendered browser/phone acceptance still outstanding. Leave the old :8765 server and `~/.helixtune` to Tim's explicit migration call.
+
 ## Next tasks
 
-1. **Next — protection provenance (design review first).** Two tiers agreed in IM: new constraints enforce immediately; persistence as a physical floor requires an owner attestation bound to exact values/units/output/driver/source revision. Pending constraints persist outside snapshots and survive restart, source deletion and metadata change until the owner explicitly clears them (per constraint, with reason). If an attested source later changes, the attestation is void and the old value stays enforced as pending. Keep the offline (disconnect) interlock for relaxation; software disconnect does not silence the DSP; design a write-paused maintenance state only after captures prove mute/ACK.
+1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 2. **Auth follow-up before wider remote use:** random server-side session ids with expiry and revocation on logout instead of the raw owner token in the cookie; reject bearer tokens in the cookie slot; keep Origin checks; tests for expired/revoked/restarted sessions. Phone pairing should mint such sessions.
 3. Prediction integrity: master gain omitted, overlapping measurements double-counted, phase-blind sums cannot establish crossover alignment. Make limitations visible and preserve measurement provenance.
 4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
@@ -162,8 +179,8 @@ These are review recommendations, not approval for every proposed product featur
 - The network API now enforces owner/agent capabilities, but same-user local processes that can read owner files can assume owner authority. Direct engine/CLI operations are trusted local operations; this is not an OS sandbox.
 - Aggregate filter headroom, safe power/excursion, and prediction-display issues remain open. Proposal conflict protection is implemented, but future solver dependencies must be added to its binding. These milestones do not establish speaker protection or public-release readiness.
 - Auth uses long-lived role credentials, not per-agent identities or expiring sessions. HTTP is unencrypted; use trusted networking/encrypted tunnels for remote access. See `docs/ACCESS.md` for rotation and remaining pairing work.
-- Stricter protection floors are persisted before writes; they may remain after a failed tune update. Deliberate offline owner reconfiguration is the only supported relaxation path.
-- Current state persistence uses direct file writes; crash-safe storage and full history reconstruction remain future work.
+- Stricter protection floors are persisted before writes; they may remain after a failed tune update. Individual offline owner clearing of obsolete constraints is the only supported relaxation path.
+- Tune/system persistence still uses direct file writes (protection and measurement records use replacement); crash-safe storage and full history reconstruction remain future work.
 - UI was source-reviewed; Codex could not inspect a rendered browser session in this environment.
 - Current event summaries cannot reconstruct a full tune timeline after restart.
 - Legacy preset crossover/mute/delay interpretation remains provisional.

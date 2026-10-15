@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, type Snippet } from 'svelte'
-  import { consumeBootstrap, unlockSession } from '../session'
+  import { consumeBootstrap, unlockSession, SESSION_ENDED } from '../session'
 
-  let { children, onready }: { children: Snippet; onready: () => void } = $props()
+  let { children, onready, onlocked }: { children: Snippet; onready: () => void; onlocked: () => void } = $props()
   let ready = $state(false)
   let checking = $state(true)
   let token = $state('')
@@ -15,6 +15,14 @@
   }
 
   onMount(() => {
+    function ended() {
+      if (!ready) return
+      ready = false
+      checking = false
+      error = 'Your browser session ended. Sign in again to continue.'
+      onlocked()
+    }
+    window.addEventListener(SESSION_ENDED, ended)
     const initial = consumeBootstrap(location, (url) => history.replaceState(null, '', url))
     void (async () => {
       try {
@@ -24,6 +32,7 @@
         error = 'Could not unlock the workstation. Check that the engine is running.'
       } finally { checking = false }
     })()
+    return () => window.removeEventListener(SESSION_ENDED, ended)
   })
 
   async function submit(event: SubmitEvent) {

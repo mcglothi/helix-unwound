@@ -1,5 +1,6 @@
 // Theme selection is per device (localStorage); custom schemes are shared via the engine.
 
+import { sessionRequest } from './session'
 import { applyScheme, BUILTIN, type Scheme } from './themes'
 
 const store = {
@@ -17,6 +18,7 @@ class ThemeState {
   driveName = $state(store.get('helixtune.driveTheme') ?? '') // '' = same as app
   followSystem = $state(store.get('helixtune.followSystem') === '1')
   private mode: string = 'studio'
+  private listening = false
   private mq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: light)') : null
 
   get all(): Scheme[] {
@@ -29,10 +31,13 @@ class ThemeState {
 
   async load() {
     try {
-      const r = await fetch('/api/themes')
+      const r = await sessionRequest('/api/themes')
       if (r.ok) this.custom = await r.json()
     } catch { /* offline: builtins only */ }
-    this.mq?.addEventListener('change', () => this.apply())
+    if (!this.listening) {
+      this.mq?.addEventListener('change', () => this.apply())
+      this.listening = true
+    }
     this.apply()
   }
 
@@ -63,14 +68,14 @@ class ThemeState {
   }
 
   async save(sc: Scheme) {
-    const r = await fetch('/api/themes', {
+    const r = await sessionRequest('/api/themes', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...sc, builtin: undefined }),
     })
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? `HTTP ${r.status}`)
     this.custom = [...this.custom.filter((t) => t.name !== sc.name), sc]
   }
   async remove(name: string) {
-    await fetch(`/api/themes/${encodeURIComponent(name)}`, { method: 'DELETE' })
+    await sessionRequest(`/api/themes/${encodeURIComponent(name)}`, { method: 'DELETE' })
     this.custom = this.custom.filter((t) => t.name !== name)
     if (this.name === name) this.choose('Studio')
   }

@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-15
-Status: ✅ Milestone 5 protection provenance complete; ready for Claude review
+Status: ✅ Milestone 6 browser sessions complete; Codex continuing prediction integrity
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -153,10 +153,25 @@ Validation:
 - **28 frontend tests passed**; Svelte/TS **0 errors, 0 warnings**; production build passed. Diff whitespace check clean.
 - No hardware/device access (tests use emulator only), user-state testing, server restart/migration, push, or publication. Rendered browser/phone acceptance still outstanding. Leave the old :8765 server and `~/.helixtune` to Tim's explicit migration call.
 
+## Milestone 6: revocable, expiring browser sessions
+
+✅ COMPLETE (Codex; independent Claude review pending alongside milestone 5)
+
+- Browser cookies now contain independent random `hs_` session IDs, never the permanent owner/agent credential. Only digests and monotonic expiry deadlines are kept in process memory; bearer authentication remains separate.
+- Fixed 12-hour absolute expiry (activity does not extend it). Logout revokes the server record so copied cookies fail; repeated bootstrap replaces that browser's old record. Other browsers remain signed in. Server restart invalidates sessions while preserving role credentials.
+- Thread-safe capacity of 64 concurrent sessions with expired-record pruning. Existing browser can replace its own slot at capacity; additional sign-ins return 429 rather than evicting another browser. HTTPS cookies are Secure; all session cookies are HttpOnly/SameSite=Strict/path `/` with Max-Age. Same-origin mutation checks remain enforced. Old raw-token cookies require sign-in after upgrade.
+- Lost authentication returns the UI to sign-in, stops polling, and clears cached workstation state. Offline transport failures preserve the existing offline view. Sign-in can restart one polling loop; in-flight prior-generation polls cannot replace newly loaded tune state. No sign-in/expiry operation reconnects, disconnects or mutes hardware.
+- See `docs/ACCESS.md`. Sessions are process-local; no multiworker deployment or phone pairing/session-management screen implemented.
+
+Validation:
+- **202 Python tests passed** locally; **177 passed / 25 skipped** from a clean Git archive without private inputs or built UI.
+- **31 frontend tests passed**, including lost-authentication notification and offline distinction; Svelte/TS **0 errors, 0 warnings**, production build passed.
+- Real authenticated API regressions cover cookie/bearer separation, copied-cookie revocation, expiry boundary/activity, restart, independent browsers, rebootstrap, Origin failures, HTTPS attributes, capacity and concurrent sign-ins. All state temporary; no server restart, user data migration, hardware use, push or publication. Rendered acceptance remains outstanding.
+
 ## Next tasks
 
 1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
-2. **Auth follow-up before wider remote use:** random server-side session ids with expiry and revocation on logout instead of the raw owner token in the cookie; reject bearer tokens in the cookie slot; keep Origin checks; tests for expired/revoked/restarted sessions. Phone pairing should mint such sessions.
+2. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
 3. Prediction integrity: master gain omitted, overlapping measurements double-counted, phase-blind sums cannot establish crossover alignment. Make limitations visible and preserve measurement provenance.
 4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
 5. Rendered browser/phone acceptance of sign-in, sign-out, and physical-output configuration; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
@@ -178,7 +193,7 @@ These are review recommendations, not approval for every proposed product featur
 - No automatic device mute or rollback is attempted after transport failure. Uncertainty can include partially applied filters. User must review and deliberately resynchronize.
 - The network API now enforces owner/agent capabilities, but same-user local processes that can read owner files can assume owner authority. Direct engine/CLI operations are trusted local operations; this is not an OS sandbox.
 - Aggregate filter headroom, safe power/excursion, and prediction-display issues remain open. Proposal conflict protection is implemented, but future solver dependencies must be added to its binding. These milestones do not establish speaker protection or public-release readiness.
-- Auth uses long-lived role credentials, not per-agent identities or expiring sessions. HTTP is unencrypted; use trusted networking/encrypted tunnels for remote access. See `docs/ACCESS.md` for rotation and remaining pairing work.
+- API/MCP role credentials remain long-lived; browser sessions now expire and revoke independently. Per-agent identities and browser-session management are not implemented. HTTP is unencrypted; use trusted networking/encrypted tunnels for remote access. See `docs/ACCESS.md` for rotation and remaining pairing work.
 - Stricter protection floors are persisted before writes; they may remain after a failed tune update. Individual offline owner clearing of obsolete constraints is the only supported relaxation path.
 - Tune/system persistence still uses direct file writes (protection and measurement records use replacement); crash-safe storage and full history reconstruction remain future work.
 - UI was source-reviewed; Codex could not inspect a rendered browser session in this environment.

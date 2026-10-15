@@ -30,3 +30,30 @@ describe('owner session bootstrap', () => {
     await expect(unlockSession('test-credential', request)).rejects.toThrow('The owner credential was not accepted.')
   })
 })
+
+describe('session expiry handling', () => {
+  it('notifies the sign-in gate when an authenticated request loses access', async () => {
+    const { sessionRequest } = await import('../session')
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 401 }))
+    const ended = vi.fn()
+    const response = await sessionRequest('/api/status', undefined, request, ended)
+    expect(response.status).toBe(401)
+    expect(ended).toHaveBeenCalledOnce()
+  })
+  it('preserves permission failures and successful requests without ending the session', async () => {
+    const { sessionRequest } = await import('../session')
+    const ended = vi.fn()
+    for (const status of [200, 403, 409, 500]) {
+      const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status }))
+      expect((await sessionRequest('/api/tune', undefined, request, ended)).status).toBe(status)
+    }
+    expect(ended).not.toHaveBeenCalled()
+  })
+  it('does not treat a disconnected engine as an expired session', async () => {
+    const { sessionRequest } = await import('../session')
+    const ended = vi.fn()
+    const request = vi.fn<typeof fetch>().mockRejectedValue(new Error('offline'))
+    await expect(sessionRequest('/api/status', undefined, request, ended)).rejects.toThrow('offline')
+    expect(ended).not.toHaveBeenCalled()
+  })
+})

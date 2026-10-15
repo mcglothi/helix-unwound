@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { sessionRequest } from '../session'
   import { onMount } from 'svelte'
   import { app } from '../state.svelte'
   import { canRecordHardware, captureDraft, hardwareLabel, sameDrivers, type CaptureDrivers, type MeasurementRecord } from '../measurements'
@@ -24,7 +25,7 @@
     drivers?.[cid]?.map((d) => `${d.make} ${d.model}`.trim() || 'Unidentified driver').join(', ') || 'Not recorded'
 
   async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await fetch(path, { method, headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    const response = await sessionRequest(path, { method, headers: body === undefined ? {} : { 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body) })
     const data = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${response.status})`)

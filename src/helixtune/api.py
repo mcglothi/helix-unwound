@@ -22,7 +22,7 @@ from .protocol.client import Client
 from .targets import Target
 from . import equipment as eq
 from .media import Library
-from .access import AccessControl, COOKIE
+from .access import AccessControl, COOKIE, SessionLimit
 from .proposals import ProposalConflict
 from .safety import OutputProtection
 from .measurements import CaptureDriver
@@ -237,13 +237,10 @@ def create_app(engine: Engine) -> FastAPI:
             scheme, _, token = authorization.partition(" ")
             principal = access.authenticate(token) if scheme.lower() == "bearer" else None
         else:
-            # Browser sessions are owner-only; an agent token cannot masquerade as a cookie.
-            principal = access.authenticate(request.cookies.get(COOKIE, ""))
-            if principal != "owner":
-                principal = None
+            principal = access.authenticate_session(request.cookies.get(COOKIE, ""))
         if principal is None:
             return JSONResponse({"detail": "Authentication required"}, status_code=401,
-                                headers={"WWW-Authenticate": "Bearer"})
+                                headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"})
         if authorization is None and request.method not in ("GET", "HEAD", "OPTIONS"):
             if origin != str(request.base_url).rstrip("/"):
                 return JSONResponse({"detail": "Browser mutations require a same-origin request"}, status_code=403)
@@ -254,17 +251,25 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.post("/api/session")
     @public_route
-    def start_session(value: SessionToken):
-        if access.authenticate(value.token) != "owner":
-            raise HTTPException(401, "Valid owner credential required")
-        response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
-        response.set_cookie(COOKIE, value.token, httponly=True, samesite="strict")
+    def start_session(value: SessionToken, request: Request):
+        try:
+            session_id = access.start_session(value.token, request.cookies.get(COOKIE, ""))
+        except SessionLimit as exc:
+            raise HTTPException(429, str(exc), headers={"Cache-Control": "no-store"}) from None
+        if session_id is None:
+            raise HTTPException(401, "Valid owner credential required", headers={"Cache-Control": "no-store"})
+        response = JSONResponse({"ok": True, "expires_in": access.session_ttl},
+                                headers={"Cache-Control": "no-store"})
+        response.set_cookie(COOKIE, session_id, max_age=access.session_ttl, path="/",
+                            secure=request.url.scheme == "https", httponly=True, samesite="strict")
         return response
 
     @app.delete("/api/session")
-    def end_session():
+    def end_session(request: Request):
+        access.revoke_session(request.cookies.get(COOKIE, ""))
         response = JSONResponse({"ok": True})
-        response.delete_cookie(COOKIE)
+        response.delete_cookie(COOKIE, path="/", secure=request.url.scheme == "https",
+                               httponly=True, samesite="strict")
         return response
 
     @app.exception_handler(SnapshotExists)

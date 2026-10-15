@@ -18,7 +18,7 @@
   })
 </script>
 
-<SessionGate onready={() => { theme.load(); app.start() }}>
+<SessionGate onlocked={() => app.stop()} onready={() => { theme.load(); app.start() }}>
 <Header />
 {#if app.mode === 'studio'}
   <div class="studio">

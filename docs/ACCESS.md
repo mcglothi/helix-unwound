@@ -17,17 +17,32 @@ snapshots, events, or browser localStorage. Do not commit or share them.
 
 `helixtune open` puts the owner credential in a URL fragment. Browser code removes
 the fragment before API calls, then exchanges it via POST for an HttpOnly,
-SameSite=Strict session cookie. API state and mutations require authentication.
+SameSite=Strict cookie holding a random browser session ID, separate from either
+permanent credential. The server retains only its digest in memory. Sessions expire
+12 hours after sign-in (activity does not extend them); logout, repeated sign-in in
+the same browser, and server restart revoke them. HTTPS requests receive Secure
+cookies; ordinary loopback HTTP remains supported. API state and mutations require authentication.
 Cookie-authenticated mutations also require an Origin matching the request's
 origin (including port). No cross-origin API access is enabled. HTML and static
 assets are public but contain no live state.
 
 For phone access, open the engine URL and enter its owner credential. Automated
-short-lived pairing, per-device sessions, and a native Mac launcher are future work.
+short-lived pairing, a device/session management screen, and a native Mac launcher
+are future work. Each browser sign-in already has an independent session.
 The server uses HTTP; credentials and cookies are not encrypted in transit. Keep
 remote access on a trusted network or use an encrypted tunnel. No cloud is required.
 
-Use **Sign out** in the header to clear that browser's owner session.
+Use **Sign out** in the header to revoke that browser's session on the server and
+clear its cookie. Copies of that session ID stop working; other browsers remain
+signed in. Expiry/revocation returns the workstation to sign-in and stops polling;
+an offline transport error preserves the existing offline view. Session expiry
+neither disconnects nor silences a DSP. Signing in never reconnects hardware.
+
+A maximum of 64 simultaneous browser sessions bounds server memory. Expired
+sessions are pruned; signing in again can replace that browser's own slot even at
+capacity. A full server returns 429 instead of silently signing out other browsers.
+Old raw-token cookies are refused after upgrade; run `helixtune open` to sign in.
+Sessions work within one engine process; multiworker hosting is not supported.
 
 ## Capabilities
 
@@ -64,7 +79,8 @@ adversarial process with the owner's filesystem access.
 
 To rotate a credential, stop the engine, remove the relevant token file, and
 restart. Existing browser sessions must sign in again after owner rotation. There
-is no credential-management endpoint or per-agent attribution/revocation yet.
+is no credential-management endpoint, remote browser-session management screen,
+or per-agent attribution/revocation yet.
 
 ## Persistent physical output limits
 

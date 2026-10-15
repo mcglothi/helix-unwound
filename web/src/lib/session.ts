@@ -15,3 +15,16 @@ export async function unlockSession(token: string, request: typeof fetch = fetch
   })
   if (!response.ok) throw new Error('The owner credential was not accepted.')
 }
+
+export const SESSION_ENDED = 'helixtune:session-ended'
+
+/** Notify the gate on lost authentication; transport errors keep the offline view. */
+export async function sessionRequest(
+  input: RequestInfo | URL, init?: RequestInit,
+  request: typeof fetch = fetch,
+  ended: () => void = () => window.dispatchEvent(new Event(SESSION_ENDED)),
+): Promise<Response> {
+  const response = await request(input, init)
+  if (response.status === 401) ended()
+  return response
+}

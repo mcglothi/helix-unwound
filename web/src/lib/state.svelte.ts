@@ -1,6 +1,7 @@
 // Single client-side store. The engine is the source of truth: every edit goes through the
 // API, then we re-read. Polling `revision` picks up edits made by agents or other devices.
 
+import { sessionRequest } from './session'
 import type { Channel, Component, Connection, Design, EqBand, OutputProtection, ProtectionConstraint, Proposal, ResponseView, SpecFields, Status, SystemView, Tune, Crossover, Vehicle } from './types'
 
 export type Mode = 'studio' | 'drive' | 'setup' | 'system' | 'measurements'
@@ -14,7 +15,7 @@ class ApiError extends Error {
 }
 
 async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
-  const r = await fetch(path, {
+  const r = await sessionRequest(path, {
     method,
     headers: body === undefined ? {} : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -47,6 +48,8 @@ class AppState {
   protections = $state<Record<string, OutputProtection>>({})
   protectionConstraints = $state<Record<string, ProtectionConstraint>>({})
   selectedComponent = $state<string | null>(null)
+  private pollTimer: ReturnType<typeof setInterval> | undefined
+  private generation = 0
   private rev = -1
   private toastId = 0
 
@@ -60,7 +63,7 @@ class AppState {
     setTimeout(() => (this.toasts = this.toasts.filter((x) => x.id !== t.id)), kind === 'error' ? 7000 : 2500)
   }
 
-  async refresh() {
+  async refresh(generation = this.generation) {
     const [tune, system, electrical, snaps, design, protections] = await Promise.all([
       api<Tune>('GET', '/api/tune'),
       api<SystemView>('GET', `/api/system?seat=${this.seat}&smoothing=${this.smoothing}&points=240`),
@@ -69,6 +72,7 @@ class AppState {
       api<Design>('GET', '/api/design'),
       api<{ outputs: Record<string, OutputProtection>; constraints: Record<string, ProtectionConstraint> }>('GET', '/api/protections'),
     ])
+    if (generation !== this.generation) return
     this.design = design
     this.protections = protections.outputs
     this.protectionConstraints = protections.constraints
@@ -80,12 +84,15 @@ class AppState {
   }
 
   async poll() {
+    const generation = this.generation
     try {
       const s = await api<Status>('GET', '/api/status')
+      if (generation !== this.generation) return
       this.status = s
       if (s.revision !== this.rev) {
         this.rev = s.revision
-        await this.refresh()
+        await this.refresh(generation)
+        if (generation !== this.generation) return
         // a proposal opened elsewhere (e.g. by an agent) shows up for review here
         const latest = s.proposals.at(-1)
         if (latest && !this.proposal) await this.openProposal(latest.id)
@@ -98,8 +105,25 @@ class AppState {
   }
 
   start() {
+    if (this.pollTimer !== undefined) return
     this.poll()
-    setInterval(() => this.poll(), 1200)
+    this.pollTimer = setInterval(() => this.poll(), 1200)
+  }
+
+  stop() {
+    clearInterval(this.pollTimer)
+    this.pollTimer = undefined
+    this.generation += 1
+    this.rev = -1
+    this.tune = null
+    this.status = null
+    this.system = null
+    this.electrical = null
+    this.design = null
+    this.protections = {}
+    this.protectionConstraints = {}
+    this.snapshots = []
+    this.closeProposal()
   }
 
   private async run(p: Promise<unknown>) {
@@ -243,7 +267,7 @@ class AppState {
     fd.append('file', file)
     fd.append('caption', caption)
     try {
-      const r = await fetch('/api/media', { method: 'POST', body: fd })
+      const r = await sessionRequest('/api/media', { method: 'POST', body: fd })
       const j = await r.json()
       if (!r.ok) throw new Error(j.detail ?? `HTTP ${r.status}`)
       return j

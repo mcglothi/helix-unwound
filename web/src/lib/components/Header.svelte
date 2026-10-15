@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { sessionRequest } from '../session'
   import { app, type Mode } from '../state.svelte'
   import { theme } from '../theme.svelte'
   import Settings from './Settings.svelte'
@@ -22,7 +23,7 @@
   }
   async function signOut() {
     try {
-      const response = await fetch('/api/session', { method: 'DELETE' })
+      const response = await sessionRequest('/api/session', { method: 'DELETE' })
       if (response.ok) location.reload()
       else app.toast('Could not end the session. Check the engine connection.')
     } catch { app.toast('Could not end the session. Check the engine connection.') }

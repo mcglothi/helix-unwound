@@ -1,0 +1,492 @@
+"""The engine: single owner of the tune, the device connection and history.
+
+UI, HTTP API and MCP tools all call into one Engine instance, so a person and an
+agent always see and change the same state.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+from . import afpx, autotune, equipment, mapping, measurements, safety, targets
+from .proposals import Proposal
+from .devicefile import ParamMap
+from .model import Tune
+from .protocol import commands
+from .protocol.client import Client
+
+
+class EngineError(RuntimeError):
+    pass
+
+
+class SafetyRejected(EngineError):
+    def __init__(self, problems: list[str]):
+        super().__init__("; ".join(problems))
+        self.problems = problems
+
+
+@dataclass
+class Event:
+    ts: float
+    source: str
+    summary: str
+    writes: int = 0
+
+
+@dataclass
+class DeviceState:
+    kind: str = "none"              # none | emulator | serial
+    port: str | None = None
+    model: str | None = None
+    model_type: int | None = None
+    writes_enabled: bool = False
+    baselined: bool = False         # device RAM known to match applied_image
+
+
+@dataclass
+class Engine:
+    mapping: mapping.DeviceMapping
+    data_dir: Path
+    policy: safety.SafetyPolicy = field(default_factory=safety.SafetyPolicy)
+    tune: Tune = field(default_factory=Tune)
+    client: Client | None = None
+    device: DeviceState = field(default_factory=DeviceState)
+    applied_image: dict[int, bytes] | None = None
+    history: list[Tune] = field(default_factory=list)
+    redo_stack: list[Tune] = field(default_factory=list)
+    events: list[Event] = field(default_factory=list)
+    pending_writes: int = 0
+    revision: int = 0
+    proposals: dict = field(default_factory=dict)
+    ab: dict = field(default_factory=lambda: {"A": None, "B": None, "active": None})
+
+    def __post_init__(self):
+        self._lock = threading.RLock()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "snapshots").mkdir(exist_ok=True)
+        cur = self.data_dir / "current.json"
+        if cur.exists():
+            self.tune = Tune.model_validate_json(cur.read_text())
+        self.measurements = measurements.Store(self.data_dir)
+        tf = self.data_dir / "targets.json"
+        self.user_targets: list[targets.Target] = (
+            [targets.Target.model_validate(t) for t in json.loads(tf.read_text())] if tf.exists() else [])
+        self.target_name = "Car preference"
+        df = self.data_dir / "system.json"
+        if df.exists():
+            self.design = equipment.SystemDesign.model_validate_json(df.read_text())
+            if equipment.normalize_ports(self.design):
+                df.write_text(self.design.model_dump_json(indent=2))
+        else:
+            self.design = equipment.seed(self.tune)
+            df.write_text(self.design.model_dump_json(indent=2))
+        pol = self.data_dir / "safety.json"
+        if pol.exists():
+            raw = json.loads(pol.read_text())
+            # fill settings added after this policy file was written, keeping the user's values
+            for role, defaults in safety.DEFAULT_ROLES.items():
+                r = raw.setdefault("roles", {}).setdefault(role.value, {})
+                for k, v in defaults.model_dump().items():
+                    r.setdefault(k, v)
+            self.policy = safety.SafetyPolicy.model_validate(raw)
+            pol.write_text(self.policy.model_dump_json(indent=2))
+        else:
+            pol.write_text(self.policy.model_dump_json(indent=2))
+
+    @classmethod
+    def from_param_map(cls, pm: ParamMap, data_dir: Path) -> "Engine":
+        return cls(mapping=mapping.DeviceMapping(pm), data_dir=data_dir)
+
+    # ---- device -------------------------------------------------------------------
+
+    def attach(self, client: Client, kind: str, port: str | None = None) -> DeviceState:
+        with self._lock:
+            info = client.identify()
+            if info.model_type != commands.PRO_MK2:
+                raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
+            self.client = client
+            self.device = DeviceState(kind=kind, port=port, model=info.model_string,
+                                      model_type=info.model_type, writes_enabled=client.allow_writes)
+            self.applied_image = None
+            self._log("engine", f"attached {kind} {port or ''} ({info.model_string})")
+            return self.device
+
+    def detach(self) -> None:
+        with self._lock:
+            self.client = None
+            self.device = DeviceState()
+            self.applied_image = None
+
+    def push_full(self, confirm: str) -> int:
+        """Overwrite every managed parameter on the device with the current tune.
+
+        Destroys whatever tune is on the device. Requires confirm == "OVERWRITE".
+        """
+        with self._lock:
+            if confirm != "OVERWRITE":
+                raise EngineError('full push overwrites the tune on the DSP; pass confirm="OVERWRITE"')
+            self._require_writable()
+            img = self.mapping.render(self.tune)
+            n = self._write(mapping.diff(None, img))
+            self.applied_image = img
+            self.device.baselined = True
+            self._log("engine", "full push to device", n)
+            return n
+
+    def _require_writable(self):
+        if self.client is None:
+            raise EngineError("no device attached")
+        if not self.device.writes_enabled:
+            raise EngineError("device attached read-only; writes are disabled")
+
+    def _write(self, changes: dict[int, bytes]) -> int:
+        ops = mapping.coalesce(changes)
+        for addr, data in ops:
+            self.client.write_ram(addr, data)
+        return len(ops)
+
+    # ---- tune changes ---------------------------------------------------------------
+
+    def apply(self, new: Tune, source: str, summary: str) -> dict:
+        """Validate and adopt a new tune; push the diff if the device is live."""
+        with self._lock:
+            new = Tune.model_validate(new.model_dump())  # re-run field validation
+            problems = self._check(new, previous=self.tune)
+            if problems:
+                self._log(source, f"REJECTED: {summary}: {'; '.join(problems)}")
+                raise SafetyRejected(problems)
+            img = self.mapping.render(new)  # raises MappingError if unrepresentable
+            writes = 0
+            if self.client is not None and self.device.writes_enabled and self.device.baselined:
+                writes = self._write(mapping.diff(self.applied_image, img))
+                self.applied_image = img
+            else:
+                self.pending_writes = len(mapping.diff(self.applied_image, img))
+            self.history.append(self.tune)
+            self.history = self.history[-200:]
+            self.redo_stack.clear()
+            self.tune = new
+            self._autosave()
+            self._log(source, summary, writes)
+            return {"ok": True, "writes": writes, "live": writes > 0}
+
+    def edit(self, source: str, summary: str, fn) -> dict:
+        """Copy the tune, let fn mutate the copy, then apply it."""
+        with self._lock:
+            draft = self.tune.model_copy(deep=True)
+            fn(draft)
+            return self.apply(draft, source, summary)
+
+    def undo(self, source: str = "user") -> dict:
+        with self._lock:
+            if not self.history:
+                raise EngineError("nothing to undo")
+            prev = self.history.pop()
+            cur = self.tune
+            # undo is allowed to lower or restore; still safety-checked without step limits
+            problems = self._check(prev)
+            if problems:
+                self.history.append(prev)
+                raise SafetyRejected(problems)
+            res = self._adopt(prev, source, "undo")
+            self.redo_stack.append(cur)
+            return res
+
+    def _adopt(self, t: Tune, source: str, summary: str) -> dict:
+        img = self.mapping.render(t)
+        writes = 0
+        if self.client is not None and self.device.writes_enabled and self.device.baselined:
+            writes = self._write(mapping.diff(self.applied_image, img))
+            self.applied_image = img
+        self.tune = t
+        self._autosave()
+        self._log(source, summary, writes)
+        return {"ok": True, "writes": writes}
+
+    # ---- snapshots ----------------------------------------------------------------
+
+    def save_snapshot(self, name: str) -> str:
+        safe = "".join(c for c in name if c.isalnum() or c in "-_ ").strip() or "snapshot"
+        path = self.data_dir / "snapshots" / f"{safe}.json"
+        t = self.tune.model_copy(update={"name": safe})
+        path.write_text(t.model_dump_json(indent=2))
+        self._log("engine", f"saved snapshot {safe}")
+        return safe
+
+    def list_snapshots(self) -> list[str]:
+        return sorted(p.stem for p in (self.data_dir / "snapshots").glob("*.json"))
+
+    def load_snapshot(self, name: str, source: str) -> dict:
+        path = self.data_dir / "snapshots" / f"{name}.json"
+        if not path.exists():
+            raise EngineError(f"no snapshot {name!r}")
+        t = Tune.model_validate_json(path.read_text())
+        with self._lock:
+            problems = self._check(t)
+            if problems:
+                raise SafetyRejected(problems)
+            self.history.append(self.tune)
+            return self._adopt(t, source, f"loaded snapshot {name}")
+
+    def snapshot_tune(self, name: str) -> Tune:
+        path = self.data_dir / "snapshots" / f"{name}.json"
+        if not path.exists():
+            raise EngineError(f"no snapshot {name!r}")
+        return Tune.model_validate_json(path.read_text())
+
+    # ---- import -------------------------------------------------------------------
+
+    def import_afpx(self, path: Path, name: str | None = None) -> dict:
+        tune, rep = afpx.load(path)
+        tune.name = name or tune.name
+        tune.notes = f"imported from {rep.source} (PC-Tool {rep.version}, saved {rep.date})"
+        safe = "".join(c for c in tune.name if c.isalnum() or c in "-_ ").strip() or "imported"
+        (self.data_dir / "snapshots" / f"{safe}.json").write_text(tune.model_dump_json(indent=2))
+        problems = self._check(tune)
+        self._log("engine", f"imported preset {safe}" + (f" ({len(problems)} safety issues)" if problems else ""))
+        return {"snapshot": safe, "warnings": rep.warnings, "safety_problems": problems}
+
+    def import_mdat(self, path: Path, tune_snapshot: str | None) -> list[dict]:
+        tune = self.snapshot_tune(tune_snapshot) if tune_snapshot else None
+        ms = measurements.import_mdat(path, tune)
+        for m in ms:
+            self.measurements.save(m)
+        self._log("engine", f"imported {len(ms)} measurements from {path.name}")
+        return [{"id": m.id, "name": m.name, "channels": m.channels} for m in ms]
+
+    def measurement_curves(self, mid: str, smoothing: float = 6, points: int = 240) -> dict:
+        m = self.measurements.get(mid)
+        grid = measurements.GRID
+        measured = np.interp(np.log(grid), np.log(m.freqs), m.spl)
+        predicted = measurements.predict(m, self.tune, grid)
+        measured = measurements.smooth(measured, grid, smoothing)
+        predicted = measurements.smooth(predicted, grid, smoothing)
+        idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
+        return {"id": m.id, "name": m.name, "channels": m.channels, "has_tune": m.tune is not None,
+                "freqs": grid[idx].round(2).tolist(), "measured": measured[idx].round(2).tolist(),
+                "predicted": predicted[idx].round(2).tolist()}
+
+    # ---- targets & system view -------------------------------------------------------
+
+    def all_targets(self) -> list[targets.Target]:
+        return targets.BUILTINS + self.user_targets
+
+    def target(self, name: str | None = None) -> targets.Target:
+        name = name or self.target_name
+        for t in self.all_targets():
+            if t.name == name:
+                return t
+        raise KeyError(f"no target {name!r}")
+
+    def save_target(self, t: targets.Target) -> None:
+        if any(b.name == t.name for b in targets.BUILTINS):
+            raise EngineError(f"{t.name!r} is a built-in target; save under another name")
+        self.user_targets = [u for u in self.user_targets if u.name != t.name] + [t.model_copy(update={"builtin": False})]
+        (self.data_dir / "targets.json").write_text(json.dumps([u.model_dump() for u in self.user_targets], indent=2))
+
+    def system_view(self, seat: str = "driver", smoothing: float = 6, points: int = 200,
+                    target: str | None = None, tune: Tune | None = None) -> dict:
+        """Everything the main graph needs in one call.
+
+        Uses the latest measurement per channel set for the seat. System curves are power
+        sums (phase-blind) until sweep data with phase is available."""
+        grid = measurements.GRID
+        idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
+        latest: dict[tuple, measurements.Measurement] = {}
+        for info in self.measurements.list():
+            if info["seat"] != seat or not info["channels"]:
+                continue
+            latest[tuple(info["channels"])] = self.measurements.get(info["id"])
+        groups: dict[str, list[np.ndarray]] = {}
+        meas_p, pred_p = [], []
+        per_channel: dict[str, list[float]] = {}
+        for chans, m in latest.items():
+            meas = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
+            pred = measurements.smooth(measurements.predict(m, tune or self.tune, grid), grid, smoothing)
+            meas_p.append(10 ** (meas / 10))
+            pred_p.append(10 ** (pred / 10))
+            role = (m.tune or tune or self.tune).channel(chans[0]).role.value
+            groups.setdefault(role, []).append(10 ** (pred / 10))
+            for c in chans:
+                per_channel[c] = pred[idx].round(2).tolist()
+        out = {"seat": seat, "freqs": grid[idx].round(2).tolist(), "target_name": target or self.target_name,
+               "measurement_count": len(latest)}
+        if not latest:
+            return out | {"measured": None, "predicted": None, "target": None, "groups": {}, "channels": {}}
+        meas_sum = 10 * np.log10(sum(meas_p))
+        pred_sum = 10 * np.log10(sum(pred_p))
+        # anchor the target at the predicted level around 1 kHz (300 Hz - 3 kHz mean)
+        band = (grid > 300) & (grid < 3000)
+        tgt = self.target(target).at(grid)
+        tgt = tgt - tgt[band].mean() + pred_sum[band].mean()
+        return out | {
+            "measured": meas_sum[idx].round(2).tolist(),
+            "predicted": pred_sum[idx].round(2).tolist(),
+            "target": tgt[idx].round(2).tolist(),
+            "groups": {r: (10 * np.log10(sum(v)))[idx].round(2).tolist() for r, v in groups.items()},
+            "channels": per_channel,
+        }
+
+    # ---- proposals ------------------------------------------------------------------------
+
+    def _seat_measurements(self, seat: str) -> dict[str, measurements.Measurement]:
+        """Latest measurement covering each channel at a seat (single-channel preferred)."""
+        out, single = {}, set()
+        for info in self.measurements.list():
+            if info["seat"] != seat or not info["channels"]:
+                continue
+            m = None
+            for c in info["channels"]:
+                if len(info["channels"]) == 1 or c not in single:
+                    m = m or self.measurements.get(info["id"])
+                    out[c] = m
+                    if len(info["channels"]) == 1:
+                        single.add(c)
+        return out
+
+    def _target_on_grid(self, seat: str, target: str | None = None) -> np.ndarray:
+        """Current target, level-matched to the predicted system at this seat (300 Hz-3 kHz)."""
+        grid = measurements.GRID
+        tgt = self.target(target).at(grid)
+        view = self.system_view(seat, smoothing=6, points=len(grid), target=target)
+        if view.get("predicted") is None:
+            return tgt
+        pred = np.asarray(view["predicted"])
+        band = (grid > 300) & (grid < 3000)
+        return tgt - tgt[band].mean() + pred[band].mean()
+
+    def _store_proposal(self, p: Proposal, source: str) -> dict:
+        p.source = source
+        self.proposals[p.id] = p
+        self.proposals = dict(list(self.proposals.items())[-20:])
+        self._log(source, f"proposed: {p.title} ({len(p.edits)} changes)")
+        self.revision += 1
+        return p.model_dump(exclude={"edits": {"__all__": {"value", "before"}}})
+
+    def propose_auto_eq(self, channels: list[str] | None, seat: str = "driver", max_bands: int = 8,
+                        max_freq: float = 8000, replace: bool = True, source: str = "engine") -> dict:
+        meas = self._seat_measurements(seat)
+        chans = [c.upper() for c in channels] if channels else sorted(meas)
+        max_boost = min(3.0, self.policy.max_eq_boost_db, self.policy.max_boost_step_db)
+        p = autotune.propose_auto_eq(self.tune, meas, self._target_on_grid(seat), chans, max_bands, max_freq,
+                                     max_boost, replace)
+        return self._store_proposal(p, source)
+
+    def propose_levels(self, seat: str = "driver", source: str = "engine") -> dict:
+        p = autotune.propose_levels(self.tune, self._seat_measurements(seat), self._target_on_grid(seat),
+                                    self.policy.max_boost_step_db)
+        return self._store_proposal(p, source)
+
+    def propose_alignment(self, distances_cm: dict[str, float], source: str = "engine") -> dict:
+        return self._store_proposal(autotune.propose_alignment(self.tune, distances_cm), source)
+
+    def proposal(self, pid: str) -> Proposal:
+        if pid not in self.proposals:
+            raise KeyError(f"no proposal {pid!r} (proposals are kept in memory for this session)")
+        return self.proposals[pid]
+
+    def preview_proposal(self, pid: str, seat: str = "driver", smoothing: float = 6, points: int = 200) -> dict:
+        draft = self.proposal(pid).apply_to(self.tune)
+        return self.system_view(seat, smoothing, points, tune=draft)
+
+    def apply_proposal(self, pid: str, source: str) -> dict:
+        p = self.proposal(pid)
+        res = self.apply(p.apply_to(self.tune), source, f"applied proposal: {p.title}")
+        self.proposals.pop(pid, None)
+        return res
+
+    # ---- A/B -----------------------------------------------------------------------------
+
+    def ab_set(self, slot: str, snapshot: str | None) -> dict:
+        slot = slot.upper()
+        if slot not in ("A", "B"):
+            raise EngineError("slot must be A or B")
+        t = self.snapshot_tune(snapshot) if snapshot else self.tune.model_copy(deep=True)
+        self.ab[slot] = t
+        if self.ab["active"] is None:
+            self.ab["active"] = slot if snapshot is None else None
+        self.revision += 1
+        return self.ab_state()
+
+    def ab_toggle(self, source: str) -> dict:
+        with self._lock:
+            if not (self.ab["A"] and self.ab["B"]):
+                raise EngineError("set both A and B first")
+            cur = self.ab["active"] or "A"
+            nxt = "B" if cur == "A" else "A"
+            if self.ab["active"]:
+                self.ab[cur] = self.tune.model_copy(deep=True)  # keep edits made while on this slot
+            t = self.ab[nxt]
+            problems = self._check(t)
+            if problems:
+                raise SafetyRejected(problems)
+            self.history.append(self.tune)
+            self._adopt(t.model_copy(deep=True), source, f"A/B → {nxt} ({t.name})")
+            self.ab["active"] = nxt
+            return self.ab_state()
+
+    def ab_state(self) -> dict:
+        return {"A": self.ab["A"].name if self.ab["A"] else None, "B": self.ab["B"].name if self.ab["B"] else None,
+                "active": self.ab["active"]}
+
+    # ---- analysis -----------------------------------------------------------------
+
+    def response(self, channel_ids: list[str] | None = None, points: int = 200) -> dict:
+        from .dsp.filters import log_freqs
+
+        f = log_freqs(points)
+        out = {"freqs": [round(x, 2) for x in f.tolist()], "channels": {}}
+        for ch in self.tune.channels:
+            if channel_ids and ch.id not in channel_ids:
+                continue
+            db = mapping.channel_response(ch, self.tune.sample_rate, f)
+            out["channels"][ch.id] = [round(x, 2) for x in np.clip(db, -120, 40).tolist()]
+        return out
+
+    def status(self) -> dict:
+        return {
+            "device": self.device.__dict__,
+            "tune_name": self.tune.name,
+            "revision": self.revision,
+            "ab": self.ab_state(),
+            "proposals": [{"id": p.id, "title": p.title, "kind": p.kind, "changes": len(p.edits), "source": p.source}
+                          for p in self.proposals.values()],
+            "undo_depth": len(self.history),
+            "pending_writes": None if self.device.baselined else self.pending_writes,
+            "recent_events": [e.__dict__ for e in self.events[-20:]],
+        }
+
+    # ---- equipment / system design ---------------------------------------------------------
+
+    def save_design(self, d: equipment.SystemDesign | None = None) -> None:
+        if d is not None:
+            ids = {c.id for c in d.components}
+            for cn in d.connections:
+                if cn.src not in ids or cn.dst not in ids:
+                    raise EngineError(f"connection {cn.id} references a missing component")
+            self.design = d
+        (self.data_dir / "system.json").write_text(self.design.model_dump_json(indent=2))
+        self.revision += 1
+
+    def _check(self, t: Tune, previous: Tune | None = None) -> list[str]:
+        return safety.check(t, self.policy, previous=previous,
+                            driver_limits=equipment.channel_driver_limits(self.design))
+
+    # ---- internals ------------------------------------------------------------------
+
+    def _autosave(self):
+        self.revision += 1
+        (self.data_dir / "current.json").write_text(self.tune.model_dump_json(indent=2))
+
+    def _log(self, source: str, summary: str, writes: int = 0):
+        self.events.append(Event(time.time(), source, summary, writes))
+        self.events = self.events[-500:]
+        with open(self.data_dir / "events.jsonl", "a") as fh:
+            fh.write(json.dumps(self.events[-1].__dict__) + "\n")

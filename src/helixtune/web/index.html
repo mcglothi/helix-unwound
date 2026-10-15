@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111418">
+<link rel="manifest" href="/static/manifest.json">
+<title>HelixTune</title>
+<style>
+:root{--bg:#f4f5f7;--panel:#fff;--ink:#16191d;--muted:#667;--line:#dde0e5;--accent:#0a7cff;--warn:#d33;--ok:#1a9a50;--grid:#e6e8ec}
+@media (prefers-color-scheme:dark){:root{--bg:#111418;--panel:#1a1e24;--ink:#e8eaed;--muted:#8a93a0;--line:#2a3039;--accent:#4aa3ff;--warn:#ff6b6b;--ok:#3ccf7e;--grid:#252b33}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:16px;margin:0 8px 0 0}
+.pill{padding:2px 10px;border-radius:99px;border:1px solid var(--line);font-size:12px;color:var(--muted)}
+.pill.live{color:var(--ok);border-color:var(--ok)}.pill.ro{color:var(--accent);border-color:var(--accent)}
+button,select,input{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+button{cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{border-color:var(--warn);color:var(--warn)}
+input[type=number]{width:84px}
+main{max-width:1100px;margin:0 auto;padding:12px 16px 80px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 8px}
+canvas{width:100%;height:240px;display:block}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+.tab{flex:0 0 auto;min-width:62px;text-align:center;padding:6px 8px;border-radius:10px;border:1px solid var(--line);background:var(--panel);cursor:pointer}
+.tab.sel{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.tab b{display:block}.tab small{color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}
+label.inline{flex-direction:row;align-items:center;gap:6px;color:var(--ink);font-size:14px}
+.xo{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:6px 0}
+table{width:100%;border-collapse:collapse}
+td,th{padding:4px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}
+th{color:var(--muted);font-weight:500}
+tr.off td{opacity:.45}
+.log{max-height:180px;overflow:auto;font:12px ui-monospace,Menlo,monospace}
+.log .agent{color:var(--accent)}
+#toast{position:fixed;left:16px;right:16px;bottom:16px;max-width:600px;margin:auto;background:var(--warn);color:#fff;padding:10px 14px;border-radius:10px;display:none;white-space:pre-wrap;z-index:9}
+#toast.info{background:var(--ok)}
+@media (max-width:600px){input[type=number]{width:70px}td,th{padding:3px;font-size:12px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>HelixTune</h1>
+  <span id="dev" class="pill">offline</span>
+  <select id="port"></select>
+  <label class="inline"><input type="checkbox" id="rw"> writes</label>
+  <button id="connect">Connect</button>
+  <button id="push" class="danger" hidden>Overwrite DSP…</button>
+  <span style="flex:1"></span>
+  <button id="undo">Undo</button>
+  <select id="snaps"><option value="">Snapshots…</option></select>
+  <button id="save">Save</button>
+</header>
+<main>
+  <div class="card"><h2>Predicted response</h2><canvas id="plot"></canvas></div>
+  <div class="card"><div class="tabs" id="tabs"></div></div>
+  <div class="card" id="chan"></div>
+  <div class="card"><h2>EQ — <span id="eqch"></span></h2>
+    <table><thead><tr><th>#</th><th>On</th><th>Type</th><th>Hz</th><th>dB</th><th>Q</th></tr></thead><tbody id="eq"></tbody></table>
+    <p><button id="eqreset">Reset EQ</button></p>
+  </div>
+  <div class="card"><h2>Master &amp; activity</h2>
+    <label class="inline">Master <input type="number" id="master" step="0.5" max="0"> dB</label>
+    <div class="log" id="log"></div>
+  </div>
+</main>
+<div id="toast"></div>
+<script>
+const ROLES=["unused","tweeter","midrange","midbass","woofer","subwoofer","fullrange"];
+const EQT=["peak","low_shelf","high_shelf","notch","allpass"];
+const XOT=["linkwitz_riley","butterworth","bessel"];
+const COLORS=["#0a7cff","#e8590c","#2f9e44","#c2255c","#7048e8","#1098ad","#f59f00","#5c940d","#d6336c","#495057"];
+let tune=null,resp=null,sel="A",rev=-1;
+const $=id=>document.getElementById(id);
+
+async function api(method,path,body){
+  const r=await fetch(path,{method,headers:{"content-type":"application/json"},body:body===undefined?undefined:JSON.stringify(body)});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){toast(j.problems?("Rejected by safety:\n• "+j.problems.join("\n• ")):(j.detail?JSON.stringify(j.detail):r.statusText));throw j}
+  return j;
+}
+function toast(msg,info){const t=$("toast");t.textContent=msg;t.className=info?"info":"";t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",info?2000:6000)}
+
+async function refresh(){
+  tune=await api("GET","/api/tune");
+  resp=await api("GET","/api/response?points=300");
+  render();
+}
+async function poll(){
+  try{
+    const s=await api("GET","/api/status");
+    const d=s.device; const p=$("dev");
+    if(d.kind==="none"){p.textContent="offline (editing only)";p.className="pill"}
+    else{p.textContent=`${d.kind}: ${d.model||"?"} · ${d.writes_enabled?(d.baselined?"LIVE":"not synced"):"read-only"}`;p.className="pill "+(d.writes_enabled&&d.baselined?"live":"ro")}
+    $("push").hidden=!(d.writes_enabled&&!d.baselined);
+    $("log").innerHTML=s.recent_events.slice().reverse().map(e=>`<div class="${e.source==="agent"?"agent":""}">${new Date(e.ts*1000).toLocaleTimeString()} [${e.source}] ${esc(e.summary)}${e.writes?` (${e.writes} writes)`:""}</div>`).join("");
+    if(s.revision!==rev){rev=s.revision;await refresh()}
+  }catch(e){}
+}
+const esc=s=>String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const ch=()=>tune.channels.find(c=>c.id===sel);
+
+function render(){
+  $("tabs").innerHTML=tune.channels.map((c,i)=>`<div class="tab ${c.id===sel?"sel":""}" data-id="${c.id}" style="border-top:3px solid ${COLORS[i]}"><b>${c.id}</b><small>${esc(c.name||c.role)}</small></div>`).join("");
+  document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{sel=t.dataset.id;render()});
+  const c=ch();
+  $("chan").innerHTML=`<h2>Channel ${c.id}</h2>
+  <div class="grid">
+    <label>Name<input id="c_name" value="${esc(c.name)}"></label>
+    <label>Role<select id="c_role">${ROLES.map(r=>`<option ${r===c.role?"selected":""}>${r}</option>`).join("")}</select></label>
+    <label>Gain dB<input type="number" id="c_gain" step="0.5" value="${c.gain_db}"></label>
+    <label>Delay ms<input type="number" id="c_delay" step="0.01" min="0" value="${c.delay_ms}"></label>
+    <label class="inline"><input type="checkbox" id="c_mute" ${c.mute?"checked":""}> Mute</label>
+    <label class="inline"><input type="checkbox" id="c_inv" ${c.invert?"checked":""}> Invert</label>
+  </div>
+  ${xoEditor("hp","High-pass",c.hp)}${xoEditor("lp","Low-pass",c.lp)}`;
+  const patch=(k,v)=>api("PATCH",`/api/channels/${c.id}`,{[k]:v}).then(refresh,refresh);
+  $("c_name").onchange=e=>patch("name",e.target.value);
+  $("c_role").onchange=e=>patch("role",e.target.value);
+  $("c_gain").onchange=e=>patch("gain_db",+e.target.value);
+  $("c_delay").onchange=e=>patch("delay_ms",+e.target.value);
+  $("c_mute").onchange=e=>patch("mute",e.target.checked);
+  $("c_inv").onchange=e=>patch("invert",e.target.checked);
+  for(const w of ["hp","lp"]){
+    const send=()=>{const on=$(w+"_on").checked;api("PUT",`/api/channels/${c.id}/${w}`,on?{type:$(w+"_t").value,slope_db:+$(w+"_s").value,freq_hz:+$(w+"_f").value}:null).then(refresh,refresh)};
+    ["_on","_t","_s","_f"].forEach(s=>$(w+s).onchange=send);
+  }
+  $("eqch").textContent=`${c.id} ${c.name||""}`;
+  $("eq").innerHTML=c.eq.map((b,i)=>`<tr class="${b.enabled?"":"off"}" data-i="${i+1}">
+    <td>${i+1}</td><td><input type="checkbox" data-k="enabled" ${b.enabled?"checked":""}></td>
+    <td><select data-k="type">${EQT.map(t=>`<option ${t===b.type?"selected":""}>${t}</option>`).join("")}</select></td>
+    <td><input type="number" data-k="freq_hz" value="${b.freq_hz}" min="10" max="24000"></td>
+    <td><input type="number" data-k="gain_db" value="${b.gain_db}" step="0.5"></td>
+    <td><input type="number" data-k="q" value="${b.q}" step="0.1" min="0.1"></td></tr>`).join("");
+  $("eq").querySelectorAll("tr").forEach(tr=>tr.querySelectorAll("[data-k]").forEach(el=>el.onchange=()=>{
+    const k=el.dataset.k,v=el.type==="checkbox"?el.checked:(el.tagName==="SELECT"?el.value:+el.value);
+    api("PATCH",`/api/channels/${c.id}/eq/${tr.dataset.i}`,{[k]:v}).then(refresh,refresh)}));
+  $("master").value=tune.master_gain_db;
+  draw();
+}
+function xoEditor(w,label,x){
+  const v=x||{type:"linkwitz_riley",slope_db:24,freq_hz:w==="hp"?80:2500};
+  return `<div class="xo"><label class="inline"><input type="checkbox" id="${w}_on" ${x?"checked":""}> ${label}</label>
+  <label>Type<select id="${w}_t">${XOT.map(t=>`<option ${t===v.type?"selected":""}>${t}</option>`).join("")}</select></label>
+  <label>dB/oct<select id="${w}_s">${[6,12,18,24,30,36,42,48].map(s=>`<option ${s===v.slope_db?"selected":""}>${s}</option>`).join("")}</select></label>
+  <label>Hz<input type="number" id="${w}_f" value="${v.freq_hz}" min="10" max="24000"></label></div>`;
+}
+function draw(){
+  const cv=$("plot"),dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+  cv.width=W*dpr;cv.height=H*dpr;const g=cv.getContext("2d");g.scale(dpr,dpr);
+  const cs=getComputedStyle(document.documentElement),grid=cs.getPropertyValue("--grid"),muted=cs.getPropertyValue("--muted");
+  const lo=Math.log10(10),hi=Math.log10(24000),y0=-30,y1=12,L=34,B=18;
+  const X=f=>L+(Math.log10(f)-lo)/(hi-lo)*(W-L-6),Y=d=>6+(y1-Math.max(y0,Math.min(y1,d)))/(y1-y0)*(H-B-6);
+  g.font="10px sans-serif";g.fillStyle=muted;g.strokeStyle=grid;g.lineWidth=1;
+  for(const f of [20,50,100,200,500,1000,2000,5000,10000,20000]){g.beginPath();g.moveTo(X(f),6);g.lineTo(X(f),H-B);g.stroke();g.fillText(f>=1000?f/1000+"k":f,X(f)-8,H-4)}
+  for(let d=y0;d<=y1;d+=6){g.beginPath();g.moveTo(L,Y(d));g.lineTo(W-6,Y(d));g.stroke();g.fillText(d,4,Y(d)+3)}
+  if(!resp)return;
+  tune.channels.forEach((c,i)=>{
+    const ys=resp.channels[c.id];if(!ys||(c.role==="unused"&&c.id!==sel))return;
+    g.strokeStyle=COLORS[i];g.globalAlpha=c.id===sel?1:.3;g.lineWidth=c.id===sel?2.2:1.2;g.beginPath();
+    resp.freqs.forEach((f,j)=>j?g.lineTo(X(f),Y(ys[j])):g.moveTo(X(f),Y(ys[j])));g.stroke();
+  });g.globalAlpha=1;
+}
+async function loadPorts(){
+  const ps=await api("GET","/api/ports").catch(()=>[]);
+  $("port").innerHTML=`<option value="emulator">emulator</option>`+ps.map(p=>`<option value="${esc(p.device)}">${esc(p.device)}</option>`).join("");
+}
+async function loadSnaps(){
+  const s=await api("GET","/api/snapshots");$("snaps").innerHTML=`<option value="">Snapshots…</option>`+s.map(n=>`<option>${esc(n)}</option>`).join("");
+}
+$("connect").onclick=()=>api("POST","/api/device/connect",{port:$("port").value,allow_writes:$("rw").checked}).then(()=>{toast("Connected",1);poll()});
+$("push").onclick=()=>{
+  if(prompt('This replaces the entire tune on the DSP with what is shown here. Type OVERWRITE to continue.')!=="OVERWRITE")return;
+  api("POST","/api/device/push-full",{confirm:"OVERWRITE"}).then(r=>{toast(`Pushed (${r.writes} writes)`,1);poll()});
+};
+$("undo").onclick=()=>api("POST","/api/undo").then(refresh,()=>{});
+$("save").onclick=()=>{const n=prompt("Snapshot name");if(n)api("POST","/api/snapshots",{name:n}).then(()=>{loadSnaps();toast("Saved",1)})};
+$("snaps").onchange=e=>{if(e.target.value&&confirm(`Load "${e.target.value}"?`))api("POST",`/api/snapshots/${encodeURIComponent(e.target.value)}/load`).then(refresh,()=>{});e.target.value=""};
+$("master").onchange=e=>api("PATCH","/api/master",{gain_db:+e.target.value}).then(refresh,refresh);
+$("eqreset").onclick=()=>{if(confirm("Disable all EQ bands on this channel?"))api("POST",`/api/channels/${sel}/eq/reset`).then(refresh,()=>{})};
+addEventListener("resize",draw);
+loadPorts();loadSnaps();poll();setInterval(poll,1500);
+</script>
+</body>
+</html>

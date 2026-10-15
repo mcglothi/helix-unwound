@@ -1,0 +1,230 @@
+// Single client-side store. The engine is the source of truth: every edit goes through the
+// API, then we re-read. Polling `revision` picks up edits made by agents or other devices.
+
+import type { Channel, Component, Connection, Design, EqBand, Proposal, ResponseView, SpecFields, Status, SystemView, Tune, Crossover, Vehicle } from './types'
+
+export type Mode = 'studio' | 'drive' | 'setup' | 'system'
+
+class ApiError extends Error {
+  constructor(public status: number, public body: any) {
+    super(body?.problems ? body.problems.join('; ') : (body?.detail ? JSON.stringify(body.detail) : `HTTP ${status}`))
+  }
+}
+
+async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new ApiError(r.status, j)
+  return j as T
+}
+
+export interface Toast { id: number; text: string; kind: 'error' | 'info' }
+
+class AppState {
+  tune = $state<Tune | null>(null)
+  status = $state<Status | null>(null)
+  system = $state<SystemView | null>(null)
+  electrical = $state<ResponseView | null>(null)
+  selected = $state('C')
+  mode = $state<Mode>('studio')
+  seat = $state('driver')
+  smoothing = $state(6)
+  layers = $state({ target: true, measured: true, predicted: true, groups: true, electrical: false })
+  snapshots = $state<string[]>([])
+  toasts = $state<Toast[]>([])
+  proposal = $state<Proposal | null>(null)       // the one open for review
+  preview = $state<SystemView | null>(null)      // system view if it were applied
+  busy = $state(false)
+  design = $state<Design | null>(null)
+  specFields = $state<SpecFields>({})
+  selectedComponent = $state<string | null>(null)
+  private rev = -1
+  private toastId = 0
+
+  get channel(): Channel | undefined {
+    return this.tune?.channels.find((c) => c.id === this.selected)
+  }
+
+  toast(text: string, kind: Toast['kind'] = 'error') {
+    const t = { id: ++this.toastId, text, kind }
+    this.toasts = [...this.toasts, t]
+    setTimeout(() => (this.toasts = this.toasts.filter((x) => x.id !== t.id)), kind === 'error' ? 7000 : 2500)
+  }
+
+  async refresh() {
+    const [tune, system, electrical, snaps, design] = await Promise.all([
+      api<Tune>('GET', '/api/tune'),
+      api<SystemView>('GET', `/api/system?seat=${this.seat}&smoothing=${this.smoothing}&points=240`),
+      api<ResponseView>('GET', '/api/response?points=240'),
+      api<string[]>('GET', '/api/snapshots'),
+      api<Design>('GET', '/api/design'),
+    ])
+    this.design = design
+    if (!Object.keys(this.specFields).length) this.specFields = await api<SpecFields>('GET', '/api/design/spec-fields')
+    this.tune = tune
+    this.system = system
+    this.electrical = electrical
+    this.snapshots = snaps
+  }
+
+  async poll() {
+    try {
+      const s = await api<Status>('GET', '/api/status')
+      this.status = s
+      if (s.revision !== this.rev) {
+        this.rev = s.revision
+        await this.refresh()
+        // a proposal opened elsewhere (e.g. by an agent) shows up for review here
+        const latest = s.proposals.at(-1)
+        if (latest && !this.proposal) await this.openProposal(latest.id)
+        if (this.proposal && !s.proposals.some((p) => p.id === this.proposal!.id)) this.closeProposal()
+      }
+    } catch {
+      /* engine restarting; keep last state */
+    }
+  }
+
+  start() {
+    this.poll()
+    setInterval(() => this.poll(), 1200)
+  }
+
+  private async run(p: Promise<unknown>) {
+    try {
+      await p
+    } catch (e: any) {
+      this.toast(e.message ?? String(e))
+    }
+    await this.poll()
+  }
+
+  patchChannel(cid: string, fields: Partial<Channel>) {
+    return this.run(api('PATCH', `/api/channels/${cid}`, fields))
+  }
+  setCrossover(cid: string, which: 'hp' | 'lp', xo: Crossover | null) {
+    return this.run(api('PUT', `/api/channels/${cid}/${which}`, xo))
+  }
+  patchBand(cid: string, band: number, fields: Partial<EqBand>) {
+    return this.run(api('PATCH', `/api/channels/${cid}/eq/${band}`, fields))
+  }
+  setMaster(gain_db: number) {
+    return this.run(api('PATCH', '/api/master', { gain_db }))
+  }
+  undo() {
+    return this.run(api('POST', '/api/undo'))
+  }
+  loadSnapshot(name: string) {
+    return this.run(api('POST', `/api/snapshots/${encodeURIComponent(name)}/load`))
+  }
+  saveSnapshot(name: string) {
+    return this.run(api('POST', '/api/snapshots', { name }))
+  }
+  // ---- proposals -------------------------------------------------------------------
+  private async propose(path: string, body?: unknown) {
+    this.busy = true
+    try {
+      const p = await api<Proposal>('POST', path, body)
+      await this.openProposal(p.id)
+      if (!p.edits.length) this.toast(p.notes.join(' ') || 'Nothing to change', 'info')
+    } catch (e: any) {
+      this.toast(e.message ?? String(e))
+    } finally {
+      this.busy = false
+    }
+  }
+  proposeAutoEq(channels: string[] | null, opts: { max_bands?: number; max_freq?: number } = {}) {
+    return this.propose('/api/propose/auto-eq', { channels, seat: this.seat, ...opts })
+  }
+  proposeLevels() {
+    return this.propose(`/api/propose/levels?seat=${this.seat}`)
+  }
+  proposeAlignment(distances_cm: Record<string, number>) {
+    return this.propose('/api/propose/alignment', { distances_cm })
+  }
+  async openProposal(id: string) {
+    this.proposal = await api<Proposal>('GET', `/api/proposals/${id}`)
+    this.preview = await api<SystemView>('GET', `/api/proposals/${id}/preview?seat=${this.seat}&smoothing=${this.smoothing}&points=240`)
+  }
+  closeProposal() {
+    this.proposal = null
+    this.preview = null
+  }
+  async applyProposal() {
+    if (!this.proposal) return
+    const id = this.proposal.id
+    await this.run(api('POST', `/api/proposals/${id}/apply`))
+    this.closeProposal()
+  }
+  async discardProposal() {
+    if (!this.proposal) return
+    const id = this.proposal.id
+    this.closeProposal()
+    await this.run(api('DELETE', `/api/proposals/${id}`))
+  }
+
+  // ---- system design ------------------------------------------------------------------
+  async addComponent(c: Partial<Component>): Promise<Component | null> {
+    let made: Component | null = null
+    try {
+      made = await api<Component>('POST', '/api/equipment', c)
+      this.selectedComponent = made.id
+    } catch (e: any) { this.toast(e.message) }
+    await this.poll()
+    return made
+  }
+  patchComponent(id: string, fields: Partial<Omit<Component, 'specs'>> & { specs?: Record<string, any> }) {
+    return this.run(api('PATCH', `/api/equipment/${id}`, fields))
+  }
+  deleteComponent(id: string) {
+    if (this.selectedComponent === id) this.selectedComponent = null
+    return this.run(api('DELETE', `/api/equipment/${id}`))
+  }
+  addConnection(c: Partial<Connection>) {
+    return this.run(api('POST', '/api/connections', c))
+  }
+  deleteConnection(id: string) {
+    return this.run(api('DELETE', `/api/connections/${id}`))
+  }
+  setVehicle(v: Vehicle) {
+    return this.run(api('PUT', '/api/design/vehicle', v))
+  }
+  async uploadMedia(file: File, caption = ''): Promise<import('./types').MediaItem | null> {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('caption', caption)
+    try {
+      const r = await fetch('/api/media', { method: 'POST', body: fd })
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.detail ?? `HTTP ${r.status}`)
+      return j
+    } catch (e: any) {
+      this.toast(`Upload failed: ${e.message ?? e}`)
+      return null
+    }
+  }
+  savePositions(view: 'flow' | 'cab', positions: Record<string, { x: number; y: number }>) {
+    return this.run(api('PUT', '/api/design/positions', { view, positions }))
+  }
+  analyze(id: string) {
+    return api<import('./types').Analysis>('GET', `/api/equipment/${id}/analysis`)
+  }
+
+  // ---- A/B --------------------------------------------------------------------------
+  setAB(slot: 'A' | 'B', snapshot: string | null) {
+    return this.run(api('PUT', `/api/ab/${slot}`, { snapshot }))
+  }
+  toggleAB() {
+    return this.run(api('POST', '/api/ab/toggle'))
+  }
+
+  async setSeat(seat: string) {
+    this.seat = seat
+    await this.refresh()
+  }
+}
+
+export const app = new AppState()

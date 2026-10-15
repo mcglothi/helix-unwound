@@ -1,0 +1,22 @@
+# Vendor binaries and extracted installer contents — never commit
+artifacts/
+notes/*.dec
+notes/main_strings*.txt
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+notes/devtype_switch.c
+captures/
+notes/afpx_writer.c
+node_modules/
+.DS_Store
+
+# Generated frontend assets (rebuild with npm run build in web/)
+src/helixtune/web/dist/
+*.tsbuildinfo
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example

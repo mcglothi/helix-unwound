@@ -1,0 +1,109 @@
+/* Studio Console (direction A) tokens; Drive mode (direction C) overrides below. */
+:root {
+  --bg: #121417;
+  --panel: #181b1f;
+  --panel-2: #1e2226;
+  --line: #2a2e34;
+  --line-2: #3a3f47;
+  --ink: #ebe7df;
+  --muted: #a8a49b;
+  --dim: #8d8a83;
+  --accent: #f2b84b;
+  --accent-ink: #1a1408;
+  --accent-text: #f2b84b;
+  --ok: #8fd6a2;
+  --warn: #ff8f7a;
+  --c-sub: #b48cff;
+  --c-midbass: #ff7a59;
+  --c-mid: #5cc98f;
+  --c-tweeter: #5aa9ff;
+  --c-full: #e0c36a;
+  --radius: 10px;
+  --gap: 16px;
+  --toast-err-bg: #4a2620;
+  --toast-ok-bg: #1f3a2b;
+  --font: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --tap: 36px;
+  color-scheme: dark;
+}
+
+:root[data-mode='drive'] {
+  /* same colours as the rest of the app; just bigger for use while seated in the car */
+  --radius: 14px;
+  --tap: 56px;
+  font-size: 17px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); }
+body { -webkit-font-smoothing: antialiased; }
+button, input, select { font: inherit; color: inherit; }
+button {
+  min-height: var(--tap); padding: 0 12px; border-radius: 6px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line-2); color: var(--ink);
+}
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.ghost { background: transparent; }
+button.on { border-color: var(--accent); color: var(--accent-text); }
+input, select {
+  min-height: var(--tap); background: var(--bg); border: 1px solid var(--line-2);
+  border-radius: 6px; padding: 0 8px;
+}
+input[type='number'] { width: 100%; font-family: var(--mono); }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+.label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+
+/* ---- layout: desktop / tablet / phone / foldable ---------------------------------- */
+.studio {
+  display: grid; gap: var(--gap); padding: var(--gap);
+  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-rows: minmax(360px, 1fr) auto;
+  grid-template-areas: 'graph inspector' 'strips strips';
+  min-height: calc(100dvh - 64px);
+}
+.area-graph { grid-area: graph; min-width: 0; }
+.area-inspector { grid-area: inspector; min-width: 0; }
+.area-strips { grid-area: strips; min-width: 0; }
+
+@media (max-width: 1100px) {
+  .studio {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(320px, 46dvh) auto auto;
+    grid-template-areas: 'graph graph' 'strips strips' 'inspector inspector';
+  }
+}
+@media (max-width: 700px) {
+  :root { --gap: 10px; }
+  .studio {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas: 'graph' 'strips' 'inspector';
+  }
+}
+
+/* Foldables, side-by-side panels (book fold): graph on one screen, controls on the other. */
+@media (horizontal-viewport-segments: 2) {
+  .studio {
+    grid-template-columns: env(viewport-segment-width 0 0) env(viewport-segment-width 1 0);
+    column-gap: calc(env(viewport-segment-left 1 0) - env(viewport-segment-right 0 0));
+    grid-template-rows: 1fr auto;
+    grid-template-areas: 'graph inspector' 'strips inspector';
+    padding-inline: 0;
+  }
+}
+/* Foldables, stacked panels (flip / tabletop): graph on top, controls below the hinge. */
+@media (vertical-viewport-segments: 2) {
+  .studio {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: env(viewport-segment-height 0 0);
+    grid-auto-rows: auto;
+    row-gap: calc(env(viewport-segment-top 0 1) - env(viewport-segment-bottom 0 0));
+    grid-template-areas: 'graph';
+  }
+  .area-strips, .area-inspector { grid-area: auto; }
+}

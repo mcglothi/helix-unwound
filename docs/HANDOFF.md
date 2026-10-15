@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-15
-Status: ✅ Foundation milestone 1 complete; ready for the next agent
+Status: ✅ Foundation milestones 1–2 complete; ready for the next agent
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -25,8 +25,9 @@ Branch: `pi/helixtune-foundation`
 - `a642b9b` — initial Claude prototype preserved (88 files). Excludes private/vendor inputs and generated frontend assets. Baseline: 64 Python tests pass locally; previous review also found 12 frontend tests passing and clean Svelte/TS checks.
 - `1d8cbc5` — collaboration setup: this document, local `AGENTS.md`, and frontend build instructions.
 - `ba4170f` — foundation milestone 1: interrupted writes, restore bookkeeping, physical output identity, synthetic regressions, and uncertain-state UI. The handoff-only commit follows this checkpoint; use `git log` for the current tip.
+- `7f2636d` — foundation milestone 2: persisted physical-output protection floors, authenticated owner/agent capabilities, owner sign-in/open command, offline protection editor, and regression coverage. A handoff-only commit follows; use `git log` for the tip.
 
-## Current milestone: device writes and physical channel identity
+## Milestone 1: device writes and physical channel identity
 
 ✅ COMPLETE
 
@@ -53,12 +54,32 @@ Validation at this checkpoint:
 - Frontend: **12 passed**; Svelte/TypeScript **0 errors, 0 warnings**; production build passed.
 - `git diff --check` passed. No real device connected and no user-state directory used.
 
-## Next tasks after this milestone
+## Milestone 2: physical protection and authenticated capabilities
 
-1. **Next concrete milestone — protection/authority boundary.** First inspect `safety.py`, `equipment.channel_driver_limits`, the role editor, and HTTP/MCP mutation paths. Propose a small model for persistent physical-output protection settings independent of mutable roles, with migration behavior for existing tunes. Then enforce the resulting rules consistently on edit, restore, full push, and agent calls. Role metadata can currently weaken checks; MCP exposes role changes and the HTTP source header is not authentication. Do not treat another source-header restriction as an authorization boundary. Preserve offline setup usability.
-2. Proposal conflicts: `before` is stored but not checked; bind affected fields and measurement assumptions to preview and reject stale application.
-3. Prediction integrity: master gain omitted, overlapping measurements double-counted, phase-blind sums cannot establish crossover alignment. Make limitations visible and preserve measurement provenance.
-4. Verify hardware protocol from Windows captures before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
+✅ COMPLETE
+
+- `protections.json` version 1 lives outside tune/snapshot state. Startup migrates current roles + equipment without rewriting the tune. Accepted metadata can tighten saved floors; changing roles to unused, muting, deleting specs/equipment, and restoring old scenes cannot weaken them.
+- Every adoption path checks persistent limits: ordinary edit/replacement, undo, snapshots, A/B, proposals, and full push. Gain/EQ ceilings also apply to unused outputs.
+- Owner-only `PUT /api/protections/{cid}` requires no device attached and explicit `RECONFIGURE`. The Inspector exposes the same operation; current role/spec constraints are reapplied. Invalid equipment constraints restore the last accepted system design instead of poisoning saved startup state.
+- Owner/agent bearer credentials are created under the data directory's `auth/` with 0700 directory / 0600 files. API reads and writes require authentication; source headers are audit labels only. Agent credentials cannot connect/disconnect devices, full-push, or change protections. They remain tuning-editor credentials, not proposal-only.
+- Browser bootstrap: run `helixtune open` after `serve`, with matching `--data`/`--port`. It opens loopback with a fragment credential, removed before API calls, and exchanges it for an HttpOnly SameSite=Strict owner cookie. Cookie mutations require a same-origin Origin header. Sign out clears the browser session.
+- MCP reads only the agent credential by default (`HELIXTUNE_DATA_DIR`, optional `HELIXTUNE_TOKEN`); overview reads now use the same authenticated/error-aware helper. Explicit crossover bypass now sends JSON null and is protection-checked; empty requests are rejected.
+- Follow `docs/ACCESS.md` for migration, scopes, and offline reconfiguration. There is no production test/auth bypass.
+
+Validation at milestone 2:
+
+- **127 Python tests passed** (no skips with local private inputs).
+- **17 frontend tests passed**, including fragment removal and session exchange regressions; Svelte/TS **0 errors, 0 warnings**; production build passed.
+- **63 portable foundation tests passed from a clean Git archive**, with no vendor files, private backups, or built UI. These include the original 25 synthetic tests plus 38 protection/access regressions.
+- Diff whitespace check and staged credential-pattern scan passed. No device connected by Codex; all tests use isolated temporary state.
+- Claude's existing development server is still running pre-change Python code and was **not restarted**. Restart it before reviewing the new frontend/API together, then run `helixtune open`. Do not auto-reconnect hardware. Rebuilt assets are local/ignored.
+
+## Next tasks
+
+1. **Next concrete milestone — proposal conflicts.** `Edit.before` is stored but not checked. Bind preview to affected fields plus its measurement/target assumptions; unrelated edits should remain mergeable, but changed affected settings or measurement context must produce a conflict and require a fresh proposal. Enforce through both HTTP and MCP with synthetic regressions. Keep old proposals/accepted tune unchanged after rejection. Review `proposals.py`, `Engine.apply_proposal`, preview endpoints, and ProposalCard first.
+2. Prediction integrity: master gain omitted, overlapping measurements double-counted, phase-blind sums cannot establish crossover alignment. Make limitations visible and preserve measurement provenance.
+3. Verify hardware protocol from Windows captures before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
+4. Rendered browser/phone acceptance of sign-in, sign-out, and physical-output configuration; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 
 These are review recommendations, not approval for every proposed product feature. See `docs/DESIGN.md` for prior choices and compare against implementation; design docs contain aspirational/unverified claims.
 
@@ -75,7 +96,10 @@ These are review recommendations, not approval for every proposed product featur
 - No protocol/hardware verification yet. Emulator and engine share provisional assumptions.
 - “Synchronized” only means all write requests returned responses accepted by the current client. ACK content, atomicity, safeload, and readback remain unverified; this is not a hardware-verified tune.
 - No automatic device mute or rollback is attempted after transport failure. Uncertainty can include partially applied filters. User must review and deliberately resynchronize.
-- Role/authority bypass, combined filter headroom, stale proposals, and prediction issues remain open. This milestone does not establish speaker protection or public-release readiness.
+- The network API now enforces owner/agent capabilities, but same-user local processes that can read owner files can assume owner authority. Direct engine/CLI operations are trusted local operations; this is not an OS sandbox.
+- Aggregate filter headroom, safe power/excursion, stale proposals, and prediction issues remain open. These milestones do not establish speaker protection or public-release readiness.
+- Auth uses long-lived role credentials, not per-agent identities or expiring sessions. HTTP is unencrypted; use trusted networking/encrypted tunnels for remote access. See `docs/ACCESS.md` for rotation and remaining pairing work.
+- Stricter protection floors are persisted before writes; they may remain after a failed tune update. Deliberate offline owner reconfiguration is the only supported relaxation path.
 - Current state persistence uses direct file writes; crash-safe storage and full history reconstruction remain future work.
 - UI was source-reviewed; Codex could not inspect a rendered browser session in this environment.
 - Current event summaries cannot reconstruct a full tune timeline after restart.

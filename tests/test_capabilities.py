@@ -67,3 +67,31 @@ def test_scene_names_are_not_silently_overwritten(clients):
     assert agent.post("/api/snapshots", json={"name": "Daily", "overwrite": True}).status_code == 403
     assert owner.post("/api/snapshots", json={"name": "Daily"}).status_code == 409  # owner must ask explicitly
     assert owner.post("/api/snapshots", json={"name": "Daily", "overwrite": True}).status_code == 200
+
+
+def test_routes_outside_api_prefix_are_not_public_by_default(clients):
+    _, app, owner, agent = clients
+
+    @app.post("/future-control")
+    def future_control():
+        return {"ok": True}
+
+    @app.get("/future-read")
+    def future_read():
+        return {"ok": True}
+
+    anon = TestClient(app)
+    assert anon.post("/future-control").status_code == 401
+    assert anon.get("/future-read").status_code == 401
+    assert agent.post("/future-control").status_code == 403
+    assert owner.post("/future-control").status_code == 200
+
+
+def test_intentional_public_surfaces_stay_public(clients):
+    _, app, _, _ = clients
+    anon = TestClient(app)
+    assert anon.get("/").status_code == 200
+    assert anon.get("/manifest.json").status_code == 200
+    assert anon.get("/api/status").status_code == 401
+    assert anon.post("/api/session", json={"token": "x" * 40}).status_code == 401  # reachable, rejects bad token
+

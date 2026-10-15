@@ -162,12 +162,33 @@ def agent_allowed(endpoint):
     return endpoint
 
 
+PUBLIC_UI_PATHS = {"/", "/legacy", "/manifest.json"}
+PUBLIC_STATIC_PREFIXES = ("/assets/", "/static/")
+
+
+def _is_public(method: str, path: str) -> bool:
+    if method in SAFE_METHODS and (path in PUBLIC_UI_PATHS or path.startswith(PUBLIC_STATIC_PREFIXES)):
+        return True
+    return method == "POST" and path == "/api/session"
+
+
+def public_route(endpoint):
+    """Mark an endpoint that may be reached without credentials (must also be on the public list)."""
+    endpoint.__helixtune_public__ = True
+    return endpoint
+
+
 async def authorize_route(request: Request) -> None:
     """Route-level capability check (runs after routing, so it sees the matched endpoint)."""
-    principal = getattr(request.state, "principal", None)
-    if principal is None or principal == "owner" or request.method in SAFE_METHODS:
-        return  # unauthenticated paths are handled by the middleware / the route itself
     endpoint = getattr(request.scope.get("route"), "endpoint", None)
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        # reached only via the middleware's public list; the endpoint must agree it is public
+        if not getattr(endpoint, "__helixtune_public__", False):
+            raise HTTPException(401, "Authentication required")
+        return
+    if principal == "owner" or request.method in SAFE_METHODS:
+        return
     if not getattr(endpoint, "__helixtune_agent__", False):
         raise HTTPException(403, "Owner capability required")
 
@@ -180,14 +201,15 @@ def create_app(engine: Engine) -> FastAPI:
     @app.middleware("http")
     async def authorize(request: Request, call_next):
         path = request.url.path
-        if not path.startswith("/api/"):
-            return await call_next(request)
         # A same-site cookie alone does not protect against another local port.
         origin = request.headers.get("origin")
-        if request.method not in ("GET", "HEAD", "OPTIONS") and origin is not None:
+        if request.method not in SAFE_METHODS and origin is not None:
             if origin != str(request.base_url).rstrip("/"):
                 return JSONResponse({"detail": "Cross-origin mutations are not allowed"}, status_code=403)
-        if path == "/api/session" and request.method == "POST":
+        # Everything requires a principal except an explicit public surface: the static UI
+        # shell (no live state) and the owner-session bootstrap exchange.
+        if _is_public(request.method, path):
+            request.state.principal = None
             return await call_next(request)
         authorization = request.headers.get("authorization")
         if authorization is not None:
@@ -210,6 +232,7 @@ def create_app(engine: Engine) -> FastAPI:
         return response
 
     @app.post("/api/session")
+    @public_route
     def start_session(value: SessionToken):
         if access.authenticate(value.token) != "owner":
             raise HTTPException(401, "Valid owner credential required")
@@ -698,14 +721,17 @@ def create_app(engine: Engine) -> FastAPI:
     dist = WEB / "dist"
 
     @app.get("/")
+    @public_route
     def index():
         return FileResponse(dist / "index.html" if (dist / "index.html").exists() else WEB / "index.html")
 
     @app.get("/legacy")
+    @public_route
     def legacy():
         return FileResponse(WEB / "index.html")
 
     @app.get("/manifest.json")
+    @public_route
     def manifest():
         return FileResponse(dist / "manifest.json" if (dist / "manifest.json").exists() else WEB / "manifest.json")
 

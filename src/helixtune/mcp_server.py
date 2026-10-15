@@ -180,7 +180,8 @@ def measurement_vs_current(measurement_id: str, smoothing: float = 6, points: in
 @mcp.tool()
 def system_vs_target(seat: str = "driver", smoothing: float = 6, points: int = 48) -> str:
     """Whole-system view at a seat: measured sum, predicted sum for the current tune,
-    the current target curve (level-matched 300 Hz-3 kHz), and predicted curves per driver
+    the current target curve (level-matched 300 Hz-3 kHz), eligible isolated output curves,
+    contributing/excluded captures, coverage, and magnitude-model limitations
     group and per channel. Power sums (phase-blind) for RTA data."""
     return _call("GET", "/api/system", params={"seat": seat, "smoothing": smoothing, "points": points})
 

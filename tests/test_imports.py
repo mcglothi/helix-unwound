@@ -62,7 +62,8 @@ def test_api_import_flow(tmp_path):
         ms = c.post("/api/import/mdat", files={"file": ("m.mdat", fh)}, data={"tune_snapshot": base}).json()
     assert len(ms) == 7
     curves = c.get(f"/api/measurements/{ms[0]['id']}/curves?points=50").json()
-    assert len(curves["predicted"]) == 50 and curves["has_tune"]
+    assert len(curves["measured"]) == 50 and curves["has_tune"]
+    assert curves["predicted"] is None and curves["hardware_status"] == "unknown"
 
 
 def test_system_view(tmp_path):
@@ -74,9 +75,10 @@ def test_system_view(tmp_path):
     with open(MDAT, "rb") as fh:
         c.post("/api/import/mdat", files={"file": ("m.mdat", fh)}, data={"tune_snapshot": "Base - DRV-TA- No EQ"})
     v = c.get("/api/system?points=64").json()
-    assert v["measurement_count"] == 7
-    assert set(v["groups"]) == {"subwoofer", "midbass", "midrange", "tweeter"}
-    assert len(v["target"]) == len(v["predicted"]) == 64
+    assert v["measurement_count"] == 0 and v["available_measurement_count"] == 7
+    assert len(v['excluded']) == 7  # import does not establish historical driver identities
+    assert v['groups'] == {} and v['predicted'] is None and v['target'] is None
+    assert len(v['freqs']) == 64
     assert c.put("/api/targets/current", json={"name": "Flat"}).status_code == 200
     assert c.get("/api/system").json()["target_name"] == "Flat"
 

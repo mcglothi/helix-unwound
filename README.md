@@ -21,6 +21,11 @@ drivers, records owner evidence, and preserves corrections. Historical captures
 are never silently relabeled to match replacements. See
 [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) for the workflow and API.
 
+The response graph reports selected capture sources, exclusions and coverage.
+Estimates use current, non-overlapping captures with a known baseline; power sums
+are explicitly phase-blind, not verified acoustic crossover alignment. See
+[`docs/PREDICTION.md`](docs/PREDICTION.md).
+
 ## Run
 
 ```bash

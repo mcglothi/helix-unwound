@@ -41,6 +41,12 @@ export interface SystemView {
   seat: string; freqs: number[]; target_name: string; measurement_count: number
   measured: number[] | null; predicted: number[] | null; target: number[] | null
   groups: Record<string, number[]>; channels: Record<string, number[]>
+  available_measurement_count: number; phase_verified: boolean
+  aggregation: 'none' | 'single_capture' | 'power_sum'
+  coverage: { outputs: string[]; missing_outputs: string[] }
+  contributors: { id: string; name: string; channels: string[]; fingerprint: string; taken_at: number; frequency_range_hz: number[] }[]
+  excluded: { id: string; name: string; reason: string }[]
+  limitations: string[]
 }
 export interface ResponseView { freqs: number[]; channels: Record<string, number[]> }
 

@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-15
-Status: ✅ Milestone 6 browser sessions complete; Codex continuing prediction integrity
+Status: ✅ Milestone 7 prediction integrity complete; public repository available for review
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -109,7 +109,7 @@ Corrections after Codex review (`cbd80f1`…`1b402ae`):
 
 Known holes after milestone 3:
 - The missing owner measurement/provenance UI was addressed in milestone 4 below. Historical hardware is not inferred or silently replaced with today's drivers.
-- The **display** system view (`/api/system`) still sums every seat measurement, including stale/unknown ones; solvers no longer use it (prediction-honesty milestone).
+- The display system view now uses current, eligible, nonoverlapping captures (milestone 7); phase/model/capture-level limitations remain explicit.
 - Agents can no longer delete wiring, so MCP can add but not rewire connections; owner canvas unaffected.
 - Agents can edit roles/equipment specs that tighten limits; milestone 5 now distinguishes durable pending constraints from owner-confirmed sources.
 - Measurement HTTP attestation requires explicit capture identities/evidence (milestone 4). Protection review now has separate individual value/unit/source bindings (milestone 5).
@@ -170,11 +170,28 @@ Validation:
 - **31 frontend tests passed**, including lost-authentication notification and offline distinction; Svelte/TS **0 errors, 0 warnings**, production build passed.
 - Real authenticated API regressions cover cookie/bearer separation, copied-cookie revocation, expiry boundary/activity, restart, independent browsers, rebootstrap, Origin failures, HTTPS attributes, capacity and concurrent sign-ins. All state temporary; no server restart, user data migration, hardware use, push or publication. Rendered acceptance remains outstanding.
 
+## Milestone 7: evidence-aware acoustic estimates
+
+✅ COMPLETE (Codex; independent review pending)
+
+- Main/Drive graphs, proposal previews and solver level anchors now select the same current hardware/known-tune captures, preferring isolated then newest records and refusing overlaps. Unknown/stale records remain available as historical measured data but cannot project onto current drivers or shift the display target.
+- Responses include contributor IDs/fingerprints/bandwidths, exclusions with reasons, coverage and missing active outputs, aggregation method and explicit magnitude-model limitations. No eligible data produces null estimates/target. Partial coverage stays visible instead of double-counting an overlapping combined capture.
+- Master gain delta is applied once outside channel transfer clipping, for both isolated and combined predictions. Captured traces remain unchanged; target level follows the selected predicted 300 Hz–3 kHz reference, not independently verified SPL.
+- Combined captures are not duplicated into individual output curves; mixed-role captures are grouped as mixed. Role group labels follow the proposed/current tune. Input-routing changes, captured muted outputs, invalid data and combined-capture delay/polarity changes refuse projection and assisted-tuning use.
+- Proposal inputs now bind delay/polarity as these settings affect combined-capture eligibility; synthetic regressions verify preview AND apply refuse after a contributing output changes them.
+- UI labels estimates and power sums explicitly, with expandable source/assumption details in Studio/Drive. The empty state directs owners to measurement review. See `docs/PREDICTION.md` and updated MCP docs.
+- Known model limits remain: phase-blind power addition, approximate electrical power-ratio scaling of combined captures, numerical filter/mute floors, edge-value extension outside capture bandwidth, and unverified recording/playback level comparability. No absolute SPL, speaker safety, or physical crossover alignment claim.
+
+Validation:
+- **217 Python tests passed** locally; **192 passed / 25 skipped** from a clean Git archive without private inputs or built UI. Includes 15 synthetic prediction regressions.
+- **34 frontend tests passed**; Svelte/TS **0 errors, 0 warnings**; production build passed. Diff whitespace check clean.
+- Hardware/user state/existing :8765 server untouched. Public repository and pushes were explicitly authorized by Tim, including the **Helix Unwound** name. Initial main includes session/protection work and branding brief; milestone 7 is pushed on the collaboration branch for review.
+
 ## Next tasks
 
 1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 2. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
-3. Prediction integrity: master gain omitted, overlapping measurements double-counted, phase-blind sums cannot establish crossover alignment. Make limitations visible and preserve measurement provenance.
+3. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Add a portable GitHub CI workflow and settle a license before inviting community contributions; neither has been set up yet.
 4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
 5. Rendered browser/phone acceptance of sign-in, sign-out, and physical-output configuration; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 

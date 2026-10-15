@@ -20,7 +20,7 @@ from . import afpx, autotune, equipment, mapping, measurements, safety, targets
 from . import protection_provenance as provenance
 from .proposals import Proposal, ProposalConflict, ProposalContext, fingerprint
 from .devicefile import ParamMap
-from .model import Tune
+from .model import Tune, Role
 from .protocol import commands
 from .protocol.client import Client
 
@@ -351,16 +351,20 @@ class Engine:
         return [{"id": m.id, "name": m.name, "channels": m.channels} for m in ms]
 
     def measurement_curves(self, mid: str, smoothing: float = 6, points: int = 240) -> dict:
-        m = self.measurements.get(mid)
-        grid = measurements.GRID
-        measured = np.interp(np.log(grid), np.log(m.freqs), m.spl)
-        predicted = measurements.predict(m, self.tune, grid)
-        measured = measurements.smooth(measured, grid, smoothing)
-        predicted = measurements.smooth(predicted, grid, smoothing)
-        idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
-        return {"id": m.id, "name": m.name, "channels": m.channels, "has_tune": m.tune is not None,
-                "freqs": grid[idx].round(2).tolist(), "measured": measured[idx].round(2).tolist(),
-                "predicted": predicted[idx].round(2).tolist()}
+        with self._lock:
+            m = self.measurements.get(mid)
+            grid = measurements.GRID
+            measured = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
+            state, why = self.measurement_status(m)
+            issues = ([why] if state != "current" else []) + measurements.prediction_issues(m, self.tune)
+            predicted = None if issues else measurements.smooth(measurements.predict(m, self.tune, grid), grid, smoothing)
+            idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
+            return {"id": m.id, "name": m.name, "channels": m.channels, "has_tune": m.tune is not None,
+                    "freqs": grid[idx].round(2).tolist(), "measured": measured[idx].round(2).tolist(),
+                    "predicted": predicted[idx].round(2).tolist() if predicted is not None else None,
+                    "prediction_issues": issues, "hardware_status": state,
+                    "prediction_method": "magnitude_delta" if len(m.channels) == 1 else "combined_power_ratio",
+                    "phase_verified": False}
 
     # ---- targets & system view -------------------------------------------------------
 
@@ -382,46 +386,83 @@ class Engine:
 
     def system_view(self, seat: str = "driver", smoothing: float = 6, points: int = 200,
                     target: str | None = None, tune: Tune | None = None) -> dict:
-        """Everything the main graph needs in one call.
+        """Magnitude estimate from current nonoverlapping captures, with explicit coverage."""
+        with self._lock:
+            now = tune or self.tune
+            chosen, excluded, available = self._prediction_selection(seat, now)
+            grid = measurements.GRID
+            idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
+            groups: dict[str, list[np.ndarray]] = {}
+            meas_p, pred_p, per_channel = [], [], {}
+            covered = sorted({c for m in chosen for c in m.channels})
+            active = {ch.id for ch in now.channels if ch.role != Role.UNUSED and not ch.mute}
+            limitations = ["Magnitude-only estimate; phase, delay and polarity effects between outputs are not verified.",
+                           "Capture and playback levels must be comparable; absolute SPL and clipping/headroom are not verified.",
+                           "Deep filter attenuation and mute use numerical floors; remeasurement is required to verify the result.",
+                           "Outside each capture frequency range, edge values are extended; inspect contributor bandwidths before interpreting the curve."]
+            if len(chosen) > 1:
+                limitations.append("Separate captures are combined as a power sum, not a measured acoustic system response.")
+            if any(len(m.channels) > 1 for m in chosen):
+                limitations.append("Combined captures use an approximate power-ratio change and cannot identify individual output responses.")
+            out = {"seat": seat, "freqs": grid[idx].round(2).tolist(), "target_name": target or self.target_name,
+                   "measurement_count": len(chosen), "available_measurement_count": available,
+                   "coverage": {"outputs": covered, "missing_outputs": sorted(active - set(covered))},
+                   "contributors": [{"id": m.id, "name": m.name, "channels": m.channels,
+                                     "fingerprint": self._measurement_fp(m), "taken_at": m.taken_at,
+                                     "frequency_range_hz": [m.freqs[0], m.freqs[-1]]} for m in chosen],
+                   "excluded": excluded, "limitations": limitations, "phase_verified": False,
+                   "aggregation": "power_sum" if len(chosen) > 1 else "single_capture" if chosen else "none"}
+            for m in chosen:
+                meas = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
+                pred = measurements.smooth(measurements.predict(m, now, grid), grid, smoothing)
+                meas_p.append(10 ** (meas / 10))
+                pred_p.append(10 ** (pred / 10))
+                roles = {now.channel(c).role.value for c in m.channels}
+                role = next(iter(roles)) if len(roles) == 1 else "mixed"
+                groups.setdefault(role, []).append(10 ** (pred / 10))
+                # A combined capture is never presented as each driver's individual response.
+                if len(m.channels) == 1:
+                    per_channel[m.channels[0]] = pred[idx].round(2).tolist()
+            if not chosen:
+                return out | {"measured": None, "predicted": None, "target": None, "groups": {}, "channels": {}}
+            meas_sum = 10 * np.log10(sum(meas_p))
+            pred_sum = 10 * np.log10(sum(pred_p))
+            band = (grid > 300) & (grid < 3000)
+            tgt = self.target(target).at(grid)
+            tgt = tgt - tgt[band].mean() + pred_sum[band].mean()
+            return out | {
+                "measured": meas_sum[idx].round(2).tolist(),
+                "predicted": pred_sum[idx].round(2).tolist(),
+                "target": tgt[idx].round(2).tolist(),
+                "groups": {r: (10 * np.log10(sum(v)))[idx].round(2).tolist() for r, v in groups.items()},
+                "channels": per_channel,
+            }
 
-        Uses the latest measurement per channel set for the seat. System curves are power
-        sums (phase-blind) until sweep data with phase is available."""
-        grid = measurements.GRID
-        idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
-        latest: dict[tuple, measurements.Measurement] = {}
+    def _prediction_selection(self, seat: str, tune: Tune | None = None) -> tuple[list, list[dict], int]:
+        """Prefer isolated, newest captures; report every refusal and overlap."""
+        candidates, excluded, available = [], [], 0
         for info in self.measurements.list():
-            if info["seat"] != seat or not info["channels"]:
+            if info["seat"] != seat:
                 continue
-            latest[tuple(info["channels"])] = self.measurements.get(info["id"])
-        groups: dict[str, list[np.ndarray]] = {}
-        meas_p, pred_p = [], []
-        per_channel: dict[str, list[float]] = {}
-        for chans, m in latest.items():
-            meas = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
-            pred = measurements.smooth(measurements.predict(m, tune or self.tune, grid), grid, smoothing)
-            meas_p.append(10 ** (meas / 10))
-            pred_p.append(10 ** (pred / 10))
-            role = (m.tune or tune or self.tune).channel(chans[0]).role.value
-            groups.setdefault(role, []).append(10 ** (pred / 10))
-            for c in chans:
-                per_channel[c] = pred[idx].round(2).tolist()
-        out = {"seat": seat, "freqs": grid[idx].round(2).tolist(), "target_name": target or self.target_name,
-               "measurement_count": len(latest)}
-        if not latest:
-            return out | {"measured": None, "predicted": None, "target": None, "groups": {}, "channels": {}}
-        meas_sum = 10 * np.log10(sum(meas_p))
-        pred_sum = 10 * np.log10(sum(pred_p))
-        # anchor the target at the predicted level around 1 kHz (300 Hz - 3 kHz mean)
-        band = (grid > 300) & (grid < 3000)
-        tgt = self.target(target).at(grid)
-        tgt = tgt - tgt[band].mean() + pred_sum[band].mean()
-        return out | {
-            "measured": meas_sum[idx].round(2).tolist(),
-            "predicted": pred_sum[idx].round(2).tolist(),
-            "target": tgt[idx].round(2).tolist(),
-            "groups": {r: (10 * np.log10(sum(v)))[idx].round(2).tolist() for r, v in groups.items()},
-            "channels": per_channel,
-        }
+            available += 1
+            m = self.measurements.get(info["id"])
+            state, why = self.measurement_status(m)
+            issues = ([why] if state != "current" else []) + measurements.prediction_issues(m, tune or self.tune)
+            if issues:
+                excluded.append({"id": m.id, "name": m.name, "reason": "; ".join(issues)})
+            else:
+                candidates.append(m)
+        candidates.sort(key=lambda m: (len(m.channels) != 1, -m.taken_at, m.id))
+        chosen, covered = [], set()
+        for m in candidates:
+            overlap = covered.intersection(m.channels)
+            if overlap:
+                excluded.append({"id": m.id, "name": m.name,
+                                 "reason": "Overlaps selected outputs " + ", ".join(sorted(overlap))})
+            else:
+                chosen.append(m)
+                covered.update(m.channels)
+        return chosen, excluded, available
 
     # ---- proposals ------------------------------------------------------------------------
 
@@ -442,28 +483,15 @@ class Engine:
 
     # -- solver targets: built only from trusted, non-overlapping measurements --
 
-    SOLVER_INPUT_FIELDS = {"role", "hp", "lp", "eq", "gain_db", "mute", "mix"}
+    SOLVER_INPUT_FIELDS = {"role", "hp", "lp", "eq", "gain_db", "mute", "mix", "delay_ms", "invert"}
 
     def channel_inputs(self, tune: Tune, channel: str) -> str:
         """Fingerprint of the channel settings the magnitude solvers consume (not names/colours)."""
         return fingerprint(tune.channel(channel).model_dump(include=self.SOLVER_INPUT_FIELDS))
 
     def _anchor_measurements(self, seat: str) -> list[measurements.Measurement]:
-        """Trusted measurements for level anchoring: current provenance, no channel counted twice.
-        Single-channel and newer measurements win."""
-        candidates = []
-        for info in self.measurements.list():
-            if info["seat"] == seat and info["channels"]:
-                m = self.measurements.get(info["id"])
-                if m.tune is not None and self.measurement_status(m)[0] == "current":
-                    candidates.append(m)
-        candidates.sort(key=lambda m: (len(m.channels) != 1, -m.taken_at))
-        chosen, covered = [], set()
-        for m in candidates:
-            if covered.isdisjoint(m.channels):
-                chosen.append(m)
-                covered.update(m.channels)
-        return chosen
+        """Use the same current, eligible, nonoverlapping captures as the displayed estimate."""
+        return self._prediction_selection(seat)[0]
 
     def solver_target(self, seat: str, mode: str) -> tuple[np.ndarray, dict[str, str]]:
         """Target array a solver uses, plus the anchor measurements it depends on.
@@ -608,7 +636,11 @@ class Engine:
             if state == "current" and m.tune is None:
                 notes.append(f"refused {m.name}: capture-time tune is unknown")
             elif state == "current":
-                usable[ch] = m
+                issues = measurements.prediction_issues(m, self.tune)
+                if issues:
+                    notes.append(f"refused {m.name}: {'; '.join(issues)}")
+                else:
+                    usable[ch] = m
             elif why not in notes:
                 notes.append(f"refused {why}")
         return usable, notes

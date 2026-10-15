@@ -27,6 +27,12 @@ class EngineError(RuntimeError):
     pass
 
 
+class SnapshotExists(EngineError):
+    def __init__(self, name: str):
+        super().__init__(f"a scene named {name!r} already exists; choose another name (the owner may overwrite)")
+        self.name = name
+
+
 class SafetyRejected(EngineError):
     def __init__(self, problems: list[str]):
         super().__init__("; ".join(problems))
@@ -264,9 +270,19 @@ class Engine:
 
     # ---- snapshots ----------------------------------------------------------------
 
-    def save_snapshot(self, name: str) -> str:
-        safe = "".join(c for c in name if c.isalnum() or c in "-_ ").strip() or "snapshot"
+    @staticmethod
+    def snapshot_name(name: str, default: str = "snapshot") -> str:
+        return "".join(c for c in name if c.isalnum() or c in "-_ ").strip() or default
+
+    def _claim_snapshot(self, safe: str, overwrite: bool) -> Path:
         path = self.data_dir / "snapshots" / f"{safe}.json"
+        if path.exists() and not overwrite:
+            raise SnapshotExists(safe)
+        return path
+
+    def save_snapshot(self, name: str, overwrite: bool = False) -> str:
+        safe = self.snapshot_name(name)
+        path = self._claim_snapshot(safe, overwrite)
         t = self.tune.model_copy(update={"name": safe})
         path.write_text(t.model_dump_json(indent=2))
         self._log("engine", f"saved snapshot {safe}")
@@ -297,12 +313,12 @@ class Engine:
 
     # ---- import -------------------------------------------------------------------
 
-    def import_afpx(self, path: Path, name: str | None = None) -> dict:
+    def import_afpx(self, path: Path, name: str | None = None, overwrite: bool = False) -> dict:
         tune, rep = afpx.load(path)
         tune.name = name or tune.name
         tune.notes = f"imported from {rep.source} (PC-Tool {rep.version}, saved {rep.date})"
-        safe = "".join(c for c in tune.name if c.isalnum() or c in "-_ ").strip() or "imported"
-        (self.data_dir / "snapshots" / f"{safe}.json").write_text(tune.model_dump_json(indent=2))
+        safe = self.snapshot_name(tune.name, "imported")
+        self._claim_snapshot(safe, overwrite).write_text(tune.model_dump_json(indent=2))
         problems = self._check(tune)
         self._log("engine", f"imported preset {safe}" + (f" ({len(problems)} safety issues)" if problems else ""))
         return {"snapshot": safe, "warnings": rep.warnings, "safety_problems": problems}

@@ -1,6 +1,6 @@
 # Access and physical output protection
 
-Last Updated: 2026-10-15
+Last Updated: 2026-10-16
 
 ## Migration and normal startup
 
@@ -34,8 +34,18 @@ Use **Sign out** in the header to clear that browser's owner session.
 | Principal | Capability |
 |---|---|
 | Unauthenticated | Static UI and owner-session credential exchange only |
-| Agent bearer token | Read state; edit tunes, proposals, measurements, snapshots, targets, equipment, and presentation data under engine checks |
-| Owner bearer token / owner browser session | Agent capabilities plus connect/disconnect devices, full overwrite, and offline physical-output reconfiguration |
+| Agent bearer token | Read state; mutating routes **explicitly opted in** with `@agent_allowed`: tune/channel edits, proposals (create, apply, discard), A/B, scene save/load and preset/measurement import (no overwriting existing names), targets, equipment/wiring add + edit, layout, media upload/caption, themes |
+| Owner bearer token / owner browser session | Everything, including all deletions, device connect/disconnect, full overwrite, physical-output reconfiguration, measurement provenance attestation, and replacing an existing scene (`overwrite: true`) |
+
+Capabilities are declared per route. An app-wide dependency runs after routing and
+refuses agent credentials on any mutating route whose endpoint is not marked
+`@agent_allowed`, so **new or unclassified routes default to owner-only**. Read
+methods (GET/HEAD/OPTIONS) are available to both principals. A regression adds an
+undecorated route at test time and proves the agent receives 403.
+
+Saving a scene or importing a preset under an existing name returns 409 `exists` for
+every principal; only the owner may retry with `overwrite: true`. Deletion is
+owner-only and permanent today; trash/recovery is planned separately.
 
 The agent credential is a bounded tuning-editor credential, not proposal-only.
 `x-helixtune-source` is an owner-controlled audit label. It neither grants nor

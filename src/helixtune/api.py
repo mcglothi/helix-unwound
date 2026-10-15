@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .dsp.filters import EqType
 from .emulator import EmulatedDevice
-from .engine import Engine, EngineError, SafetyRejected
+from .engine import Engine, EngineError, SafetyRejected, SnapshotExists
 from .mapping import MappingError
 from .model import EQ_BANDS, Crossover, Role, Tune
 from .protocol.client import Client
@@ -71,6 +71,11 @@ class ProtectionUpdate(BaseModel):
 
 class SnapshotName(BaseModel):
     name: str
+
+
+class SnapshotSave(BaseModel):
+    name: str
+    overwrite: bool = False  # owner only
 
 
 class MeasPatch(BaseModel):
@@ -135,14 +140,40 @@ def _fmt(d: dict) -> str:
     return ", ".join(f"{k}={v.value if hasattr(v, 'value') else v}" for k, v in d.items())
 
 
+def _may_overwrite(request: Request, requested: bool) -> bool:
+    """Only the owner may replace an existing scene; agents get a conflict instead."""
+    if requested and request.state.principal != "owner":
+        raise HTTPException(403, "Only the owner can overwrite an existing scene")
+    return requested
+
+
 def _src(request: Request) -> str:
     if request.state.principal == "agent":
         return "agent"
     return request.headers.get("x-helixtune-source", "ui")
 
 
+SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+def agent_allowed(endpoint):
+    """Opt a mutating route in for agent credentials. Undecorated mutating routes are owner-only."""
+    endpoint.__helixtune_agent__ = True
+    return endpoint
+
+
+async def authorize_route(request: Request) -> None:
+    """Route-level capability check (runs after routing, so it sees the matched endpoint)."""
+    principal = getattr(request.state, "principal", None)
+    if principal is None or principal == "owner" or request.method in SAFE_METHODS:
+        return  # unauthenticated paths are handled by the middleware / the route itself
+    endpoint = getattr(request.scope.get("route"), "endpoint", None)
+    if not getattr(endpoint, "__helixtune_agent__", False):
+        raise HTTPException(403, "Owner capability required")
+
+
 def create_app(engine: Engine) -> FastAPI:
-    app = FastAPI(title="helixtune", version="0.0.1")
+    app = FastAPI(title="helixtune", version="0.0.1", dependencies=[Depends(authorize_route)])
     access = AccessControl(engine.data_dir)
     app.state.access = access
 
@@ -174,9 +205,6 @@ def create_app(engine: Engine) -> FastAPI:
             if origin != str(request.base_url).rstrip("/"):
                 return JSONResponse({"detail": "Browser mutations require a same-origin request"}, status_code=403)
         request.state.principal = principal
-        if principal == "agent" and request.method not in ("GET", "HEAD", "OPTIONS"):
-            if path.startswith(("/api/device/", "/api/protections/")) or path == "/api/session":
-                return JSONResponse({"detail": "Owner capability required"}, status_code=403)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -194,6 +222,10 @@ def create_app(engine: Engine) -> FastAPI:
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE)
         return response
+
+    @app.exception_handler(SnapshotExists)
+    async def _exists(_, e: SnapshotExists):
+        return JSONResponse({"error": "exists", "name": e.name, "detail": str(e)}, status_code=409)
 
     @app.exception_handler(ProposalConflict)
     async def _conflict(_, e: ProposalConflict):
@@ -264,10 +296,12 @@ def create_app(engine: Engine) -> FastAPI:
     # ---- edit ---------------------------------------------------------------------
 
     @app.put("/api/tune")
+    @agent_allowed
     def put_tune(t: Tune, request: Request):
         return engine.apply(t, _src(request), "replaced whole tune")
 
     @app.patch("/api/channels/{cid}")
+    @agent_allowed
     def patch_channel(cid: str, p: ChannelPatch, request: Request):
         fields = p.model_dump(exclude_none=True)
         engine.tune.channel(cid)  # 404 early
@@ -279,6 +313,7 @@ def create_app(engine: Engine) -> FastAPI:
         return engine.edit(_src(request), f"{cid.upper()}: {_fmt(fields)}", f)
 
     @app.put("/api/channels/{cid}/{which}")
+    @agent_allowed
     async def put_crossover(cid: str, which: Literal["hp", "lp"], request: Request, xo: Crossover | None = None):
         if not await request.body():
             raise HTTPException(422, "Supply a crossover object or explicit JSON null to bypass")
@@ -288,6 +323,7 @@ def create_app(engine: Engine) -> FastAPI:
                                        lambda t: setattr(t.channel(cid), which, xo))
 
     @app.patch("/api/channels/{cid}/eq/{band}")
+    @agent_allowed
     def patch_band(cid: str, band: int, p: BandPatch, request: Request):
         if not 1 <= band <= EQ_BANDS:
             raise HTTPException(404, f"band must be 1..{EQ_BANDS}")
@@ -301,6 +337,7 @@ def create_app(engine: Engine) -> FastAPI:
         return engine.edit(_src(request), f"{cid.upper()} band {band}: {_fmt(fields)}", f)
 
     @app.post("/api/channels/{cid}/eq/reset")
+    @agent_allowed
     def reset_eq(cid: str, request: Request):
         engine.tune.channel(cid)
 
@@ -310,11 +347,13 @@ def create_app(engine: Engine) -> FastAPI:
         return engine.edit(_src(request), f"{cid.upper()}: EQ reset", f)
 
     @app.patch("/api/master")
+    @agent_allowed
     def patch_master(p: MasterPatch, request: Request):
         return engine.edit(_src(request), f"master {p.gain_db} dB",
                            lambda t: setattr(t, "master_gain_db", p.gain_db))
 
     @app.post("/api/undo")
+    @agent_allowed
     def undo(request: Request):
         return engine.undo(_src(request))
 
@@ -325,10 +364,12 @@ def create_app(engine: Engine) -> FastAPI:
         return engine.list_snapshots()
 
     @app.post("/api/snapshots")
-    def save_snapshot(s: SnapshotName):
-        return {"saved": engine.save_snapshot(s.name)}
+    @agent_allowed
+    def save_snapshot(s: SnapshotSave, request: Request):
+        return {"saved": engine.save_snapshot(s.name, overwrite=_may_overwrite(request, s.overwrite))}
 
     @app.post("/api/snapshots/{name}/load")
+    @agent_allowed
     def load_snapshot(name: str, request: Request):
         return engine.load_snapshot(name, _src(request))
 
@@ -341,10 +382,12 @@ def create_app(engine: Engine) -> FastAPI:
         return tmp
 
     @app.post("/api/import/afpx")
-    def import_afpx(file: UploadFile = File(...)):
-        return engine.import_afpx(_spool(file, ".afpx"))
+    @agent_allowed
+    def import_afpx(request: Request, file: UploadFile = File(...), overwrite: bool = Form(False)):
+        return engine.import_afpx(_spool(file, ".afpx"), overwrite=_may_overwrite(request, overwrite))
 
     @app.post("/api/import/mdat")
+    @agent_allowed
     def import_mdat(file: UploadFile = File(...), tune_snapshot: str | None = Form(None)):
         return engine.import_mdat(_spool(file, ".mdat"), tune_snapshot)
 
@@ -358,6 +401,7 @@ def create_app(engine: Engine) -> FastAPI:
 
 
     @app.patch("/api/measurements/{mid}")
+    @agent_allowed
     def patch_measurement(mid: str, p: MeasPatch):
         m = engine.measurements.get(mid)
         upd = p.model_dump(exclude_none=True, exclude={"tune_snapshot"})
@@ -370,10 +414,8 @@ def create_app(engine: Engine) -> FastAPI:
         return engine.measurements.save(m.model_copy(update=upd)).model_dump(exclude={"freqs", "spl", "phase", "tune"})
 
     @app.post("/api/measurements/{mid}/attest")
-    def attest_measurement(mid: str, request: Request):
-        """Owner statement that this measurement was taken with the drivers recorded now."""
-        if request.state.principal != "owner":
-            raise HTTPException(403, "Only the owner can attest measurement provenance")
+    def attest_measurement(mid: str):
+        """Owner statement that this measurement was taken with the drivers recorded now (owner-only route)."""
         m = engine.attest_measurement(mid, "owner")
         return {"id": m.id, "drivers": m.drivers, "drivers_source": m.drivers_source}
 
@@ -389,6 +431,7 @@ def create_app(engine: Engine) -> FastAPI:
         return {"current": engine.target_name, "targets": engine.all_targets()}
 
     @app.put("/api/targets/current")
+    @agent_allowed
     def set_target(s: SnapshotName):
         engine.target(s.name)
         engine.target_name = s.name
@@ -396,6 +439,7 @@ def create_app(engine: Engine) -> FastAPI:
         return {"current": s.name}
 
     @app.post("/api/targets")
+    @agent_allowed
     def save_target(t: Target):
         engine.save_target(t)
         return {"saved": t.name}
@@ -410,14 +454,17 @@ def create_app(engine: Engine) -> FastAPI:
 
 
     @app.post("/api/propose/auto-eq")
+    @agent_allowed
     def propose_auto_eq(r: AutoEqReq, request: Request):
         return engine.propose_auto_eq(r.channels, r.seat, r.max_bands, r.max_freq, r.replace, _src(request))
 
     @app.post("/api/propose/levels")
+    @agent_allowed
     def propose_levels(request: Request, seat: str = "driver"):
         return engine.propose_levels(seat, _src(request))
 
     @app.post("/api/propose/alignment")
+    @agent_allowed
     def propose_alignment(r: AlignReq, request: Request):
         return engine.propose_alignment(r.distances_cm, _src(request))
 
@@ -430,20 +477,24 @@ def create_app(engine: Engine) -> FastAPI:
         return engine.preview_proposal(pid, seat, smoothing, max(32, min(points, 480)))
 
     @app.post("/api/proposals/{pid}/apply")
+    @agent_allowed
     def apply_proposal(pid: str, request: Request):
         return engine.apply_proposal(pid, _src(request))
 
     @app.delete("/api/proposals/{pid}")
+    @agent_allowed
     def discard_proposal(pid: str):
         engine.proposals.pop(pid, None)
         engine.revision += 1
         return {"ok": True}
 
     @app.put("/api/ab/{slot}")
+    @agent_allowed
     def ab_set(slot: str, r: SlotReq):
         return engine.ab_set(slot, r.snapshot)
 
     @app.post("/api/ab/toggle")
+    @agent_allowed
     def ab_toggle(request: Request):
         return engine.ab_toggle(_src(request))
 
@@ -454,6 +505,7 @@ def create_app(engine: Engine) -> FastAPI:
         return engine.design
 
     @app.put("/api/design/vehicle")
+    @agent_allowed
     def put_vehicle(v: eq.Vehicle):
         engine.design.vehicle = v
         engine.save_design()
@@ -465,6 +517,7 @@ def create_app(engine: Engine) -> FastAPI:
                 for k, fields in eq.KNOWN_SPECS.items()}
 
     @app.post("/api/equipment")
+    @agent_allowed
     def add_component(c: eq.Component):
         if any(x.id == c.id for x in engine.design.components):
             raise HTTPException(409, f"component {c.id} exists")
@@ -473,6 +526,7 @@ def create_app(engine: Engine) -> FastAPI:
         return c
 
     @app.patch("/api/equipment/{cid}")
+    @agent_allowed
     def patch_component(cid: str, p: ComponentPatch):
         c = engine.design.get(cid)
         upd = p.model_dump(exclude_none=True, exclude={"specs"})
@@ -502,6 +556,7 @@ def create_app(engine: Engine) -> FastAPI:
         return {"ok": True}
 
     @app.put("/api/design/positions")
+    @agent_allowed
     def put_positions(p: PositionsIn):
         field_name = "flow_pos" if p.view == "flow" else "cab_pos"
         comps = []
@@ -517,6 +572,7 @@ def create_app(engine: Engine) -> FastAPI:
         return eq.analyze(engine.design, cid)
 
     @app.post("/api/connections")
+    @agent_allowed
     def add_connection(cn: eq.Connection):
         engine.design.get(cn.src)
         engine.design.get(cn.dst)
@@ -539,6 +595,7 @@ def create_app(engine: Engine) -> FastAPI:
         return lib.list()
 
     @app.post("/api/media")
+    @agent_allowed
     async def upload_media(file: UploadFile = File(...), caption: str = Form("")):
         data = await file.read()
         try:
@@ -552,6 +609,7 @@ def create_app(engine: Engine) -> FastAPI:
         return FileResponse(path, media_type=ctype, headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
 
     @app.patch("/api/media/{mid}")
+    @agent_allowed
     def patch_media(mid: str, p: MediaPatch):
         return lib.update(mid, p.caption, p.tags)
 
@@ -583,6 +641,7 @@ def create_app(engine: Engine) -> FastAPI:
         return _themes()
 
     @app.post("/api/themes")
+    @agent_allowed
     def save_theme(t: ThemeIn):
         import json
         import re

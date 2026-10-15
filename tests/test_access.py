@@ -112,7 +112,8 @@ def test_agent_cannot_erase_limits_via_role_and_equipment_metadata(clients):
         "specs": {"hp_min": {"value": 2600}}}).json()
     assert agent.patch("/api/channels/A", json={"role": "unused"}).status_code == 200
     assert agent.patch(f"/api/equipment/{component['id']}", json={"specs": {"hp_min": None}}).status_code == 200
-    assert agent.delete(f"/api/equipment/{component['id']}").status_code == 200
+    assert agent.delete(f"/api/equipment/{component['id']}").status_code == 403  # deletion is owner-only
+    assert owner.delete(f"/api/equipment/{component['id']}").status_code == 200  # and still can't relax floors
     assert agent.put("/api/channels/A/hp", json={"freq_hz": 2000}).status_code == 409
     assert agent.put("/api/channels/A/hp").status_code == 422
     assert agent.put("/api/channels/A/hp", content="null", headers={"Content-Type": "application/json"}).status_code == 409

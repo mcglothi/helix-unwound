@@ -130,8 +130,19 @@ class AppState {
   loadSnapshot(name: string) {
     return this.run(api('POST', `/api/snapshots/${encodeURIComponent(name)}/load`))
   }
-  saveSnapshot(name: string) {
-    return this.run(api('POST', '/api/snapshots', { name }))
+  async saveSnapshot(name: string) {
+    try {
+      await api('POST', '/api/snapshots', { name })
+      this.toast(`Saved “${name}”`, 'info')
+    } catch (e: any) {
+      // existing scenes are never replaced implicitly; ask the owner first
+      if (e?.status === 409 && e?.body?.error === 'exists') {
+        if (confirm(`A scene named “${e.body.name}” already exists. Replace it?`)) {
+          await this.run(api('POST', '/api/snapshots', { name, overwrite: true }))
+        }
+      } else this.toast(e.message ?? String(e))
+    }
+    await this.poll()
   }
   // ---- proposals -------------------------------------------------------------------
   private async propose(path: string, body?: unknown) {

@@ -13,7 +13,7 @@
   )
   const ab = $derived(app.status?.ab)
   const live = $derived(!!dev?.writes_enabled && !!dev?.baselined)
-  const MODES: { m: Mode; l: string }[] = [{ m: 'studio', l: 'Studio' }, { m: 'drive', l: 'Drive' }, { m: 'setup', l: 'Setup' }, { m: 'system', l: 'System' }]
+  const MODES: { m: Mode; l: string }[] = [{ m: 'studio', l: 'Studio' }, { m: 'drive', l: 'Drive' }, { m: 'setup', l: 'Setup' }, { m: 'system', l: 'System' }, { m: 'measurements', l: 'Measurements' }]
 
   function setMode(m: Mode) {
     app.mode = m
@@ -86,8 +86,8 @@
   .device-error { padding: 12px 16px; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--warn); }
   .brand { font-weight: 600; font-size: 17px; letter-spacing: .02em; }
   .brand span { color: var(--accent-text); }
-  .modes { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
-  .modes button { border: 0; background: transparent; color: var(--muted); min-height: calc(var(--tap) - 6px); }
+  .modes { display: flex; max-width: 100%; overflow-x: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+  .modes button { flex-shrink: 0; border: 0; background: transparent; color: var(--muted); min-height: calc(var(--tap) - 6px); }
   .modes button.active { background: var(--panel-2); color: var(--ink); }
   .tune { color: var(--muted); font-size: 13px; max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .spacer { flex: 1; }

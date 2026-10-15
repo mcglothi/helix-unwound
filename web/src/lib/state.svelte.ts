@@ -3,7 +3,7 @@
 
 import type { Channel, Component, Connection, Design, EqBand, OutputProtection, Proposal, ResponseView, SpecFields, Status, SystemView, Tune, Crossover, Vehicle } from './types'
 
-export type Mode = 'studio' | 'drive' | 'setup' | 'system'
+export type Mode = 'studio' | 'drive' | 'setup' | 'system' | 'measurements'
 
 class ApiError extends Error {
   constructor(public status: number, public body: any) {

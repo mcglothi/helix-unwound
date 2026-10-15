@@ -97,7 +97,10 @@ def test_conflict_over_http_and_attest_is_owner_only(engine):
     owner = owner_client(app)
     agent = TestClient(app, headers={"Authorization": f"Bearer {app.state.access.token('agent')}"})
     assert agent.post(f"/api/measurements/{engine._mid}/attest").status_code == 403
-    assert owner.post(f"/api/measurements/{engine._mid}/attest").status_code == 200
+    metadata = owner.get(f"/api/measurements/{engine._mid}").json()
+    assert owner.post(f"/api/measurements/{engine._mid}/attest", json={
+        "drivers": metadata["current_drivers"], "reason": "Synthetic fixture has known capture hardware",
+        "expected_fingerprint": metadata["capture_fingerprint"]}).status_code == 200
     pid = agent.post("/api/propose/auto-eq", json={"channels": ["C"]}).json()["id"]
     agent.patch("/api/channels/C/eq/1", json={"enabled": True, "gain_db": -1})
     r = agent.post(f"/api/proposals/{pid}/apply")

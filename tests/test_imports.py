@@ -91,8 +91,16 @@ def test_proposals_and_ab(tmp_path):
     c.post("/api/snapshots/Base - DRV-TA- No EQ/load")
     refused = c.post("/api/propose/auto-eq", json={"channels": ["C", "I"]}).json()
     assert refused["edits"] == [] and any("unknown" in n for n in refused["notes"])  # legacy provenance
+    imported = c.get("/api/measurements").json()
+    # Explicit synthetic hardware for this isolated integration test; never infer
+    # actual historical drivers from a legacy file or today's installation.
+    for cid in sorted({cid for m in imported for cid in m["channels"]}):
+        assert c.post("/api/equipment", json={"kind": "speaker", "id": f"fixture-{cid}",
+            "make": "Synthetic", "model": f"Driver {cid}", "channels": [cid]}).status_code == 200
     for m in c.get("/api/measurements").json():
-        assert c.post(f"/api/measurements/{m['id']}/attest").status_code == 200
+        assert c.post(f"/api/measurements/{m['id']}/attest", json={
+            "drivers": m["current_drivers"], "reason": "Synthetic capture hardware for isolated integration test",
+            "expected_fingerprint": m["capture_fingerprint"]}).status_code == 200
     p = c.post("/api/propose/auto-eq", json={"channels": ["C", "I"]}).json()
     chans = {e["channel"] for e in p["edits"]}
     assert chans == {"C", "I", "J"}  # subs measured together -> linked

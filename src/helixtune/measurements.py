@@ -13,9 +13,12 @@ as a power sum otherwise.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -24,6 +27,24 @@ from .mapping import channel_response
 from .model import Role, Tune
 
 GRID = np.geomspace(10, 24000, 480)  # ~1/58 octave storage grid
+
+
+class CaptureDriver(BaseModel):
+    model_config = {"str_strip_whitespace": True}
+
+    id: str = Field(..., min_length=1, max_length=120)
+    make: str = Field(..., min_length=1, max_length=120)
+    model: str = Field(..., min_length=1, max_length=120)
+
+
+class DriverProvenanceEvent(BaseModel):
+    action: Literal["attest", "correct", "invalidate"]
+    at: float = Field(default_factory=time.time)
+    source: str
+    reason: str
+    drivers: dict[str, list[dict[str, str]]] | None = None
+    previous_drivers: dict[str, list[dict[str, str]]] | None = None
+    capture_fingerprint: str
 
 
 class Measurement(BaseModel):
@@ -43,6 +64,7 @@ class Measurement(BaseModel):
     # None = unknown provenance (e.g. imported legacy files); never inferred from import time.
     drivers: dict[str, list[dict[str, str]]] | None = None
     drivers_source: str = ""                # how `drivers` was established, e.g. "owner attested …"
+    driver_history: list[DriverProvenanceEvent] = Field(default_factory=list)
 
 
 def resample(freqs, spl, grid=GRID, smoothing_oct: float = 1 / 24) -> list[float]:
@@ -75,7 +97,15 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def save(self, m: Measurement) -> Measurement:
-        (self.root / f"{m.id}.json").write_text(m.model_dump_json())
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", dir=self.root, prefix=".measurement-", suffix=".tmp", delete=False) as fh:
+                temporary = Path(fh.name)
+                fh.write(m.model_dump_json())
+            os.replace(temporary, self.root / f"{m.id}.json")
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         return m
 
     def get(self, mid: str) -> Measurement:

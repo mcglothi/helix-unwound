@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .dsp.filters import EqType
 from .emulator import EmulatedDevice
-from .engine import Engine, EngineError, SafetyRejected, SnapshotExists
+from .engine import Engine, EngineError, MeasurementConflict, SafetyRejected, SnapshotExists
 from .mapping import MappingError
 from .model import EQ_BANDS, Crossover, Role, Tune
 from .protocol.client import Client
@@ -25,6 +25,7 @@ from .media import Library
 from .access import AccessControl, COOKIE
 from .proposals import ProposalConflict
 from .safety import OutputProtection
+from .measurements import CaptureDriver
 
 WEB = Path(__file__).parent / "web"
 
@@ -84,6 +85,16 @@ class MeasPatch(BaseModel):
     seat: str | None = None
     notes: str | None = None
     tune_snapshot: str | None = Field(None, description="attach the tune that was active when measured")
+    clear_tune: bool = False
+
+
+class MeasurementAttestation(BaseModel):
+    model_config = {"str_strip_whitespace": True}
+
+    drivers: dict[str, list[CaptureDriver]]
+    reason: str = Field(..., min_length=8, max_length=2000)
+    expected_fingerprint: str = Field(..., pattern=r"^[a-f0-9]{16}$")
+    correct_existing: bool = False
 
 
 class AutoEqReq(BaseModel):
@@ -197,6 +208,10 @@ def create_app(engine: Engine) -> FastAPI:
     app = FastAPI(title="helixtune", version="0.0.1", dependencies=[Depends(authorize_route)])
     access = AccessControl(engine.data_dir)
     app.state.access = access
+
+    @app.exception_handler(MeasurementConflict)
+    async def _measurement_conflict(_, exc: MeasurementConflict):
+        return JSONResponse({"error": "measurement_conflict", "detail": str(exc)}, status_code=409)
 
     @app.middleware("http")
     async def authorize(request: Request, call_next):
@@ -416,7 +431,11 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.get("/api/measurements")
     def list_measurements():
-        return engine.measurements.list()
+        return engine.list_measurements()
+
+    @app.get("/api/measurements/{mid}")
+    def measurement_metadata(mid: str):
+        return engine.measurement_metadata(mid)
 
     @app.get("/api/measurements/{mid}/curves")
     def measurement_curves(mid: str, smoothing: float = 6, points: int = 240):
@@ -425,26 +444,19 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.patch("/api/measurements/{mid}")
     @agent_allowed
-    def patch_measurement(mid: str, p: MeasPatch):
-        m = engine.measurements.get(mid)
-        upd = p.model_dump(exclude_none=True, exclude={"tune_snapshot"})
-        if "channels" in upd:
-            upd["channels"] = [c.upper() for c in upd["channels"]]
-            for c in upd["channels"]:
-                engine.tune.channel(c)
-        if p.tune_snapshot:
-            upd["tune"] = engine.snapshot_tune(p.tune_snapshot)
-        return engine.measurements.save(m.model_copy(update=upd)).model_dump(exclude={"freqs", "spl", "phase", "tune"})
+    def patch_measurement(mid: str, p: MeasPatch, request: Request):
+        upd = p.model_dump(exclude_none=True, exclude={"tune_snapshot", "clear_tune"})
+        return engine.update_measurement(mid, upd, p.tune_snapshot, p.clear_tune, _src(request))
 
     @app.post("/api/measurements/{mid}/attest")
-    def attest_measurement(mid: str):
-        """Owner statement that this measurement was taken with the drivers recorded now (owner-only route)."""
-        m = engine.attest_measurement(mid, "owner")
-        return {"id": m.id, "drivers": m.drivers, "drivers_source": m.drivers_source}
+    def attest_measurement(mid: str, value: MeasurementAttestation):
+        """Explicit capture-time identities and owner evidence; historical hardware stays historical."""
+        engine.attest_measurement(mid, "owner", **value.model_dump())
+        return engine.measurement_metadata(mid)
 
     @app.delete("/api/measurements/{mid}")
     def delete_measurement(mid: str):
-        engine.measurements.delete(mid)
+        engine.delete_measurement(mid)
         return {"ok": True}
 
     # ---- targets & system view -----------------------------------------------------

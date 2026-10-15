@@ -11,6 +11,11 @@ is the plan to confirm them.
 
 For ongoing Codex/Claude work, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
+The **Measurements** view reviews capture-time hardware separately from installed
+drivers, records owner evidence, and preserves corrections. Historical captures
+are never silently relabeled to match replacements. See
+[`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) for the workflow and API.
+
 ## Run
 
 ```bash

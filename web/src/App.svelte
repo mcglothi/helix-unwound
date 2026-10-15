@@ -11,6 +11,7 @@
   import ProposalCard from './lib/components/ProposalCard.svelte'
   import SystemView from './lib/components/SystemView.svelte'
   import SessionGate from './lib/components/SessionGate.svelte'
+  import MeasurementsView from './lib/components/MeasurementsView.svelte'
 
   onMount(() => {
     theme.apply()
@@ -29,6 +30,8 @@
   <DriveView />
 {:else if app.mode === 'system'}
   <SystemView />
+{:else if app.mode === 'measurements'}
+  <MeasurementsView />
 {:else}
   <SetupWizard />
 {/if}

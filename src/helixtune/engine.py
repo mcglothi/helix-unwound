@@ -38,6 +38,10 @@ class NoTrustedAnchor(EngineError):
     """A solver needs a trustworthy reference and none exists; refuse instead of guessing."""
 
 
+class MeasurementConflict(EngineError):
+    pass
+
+
 class SafetyRejected(EngineError):
     def __init__(self, problems: list[str]):
         super().__init__("; ".join(problems))
@@ -450,7 +454,7 @@ class Engine:
         for info in self.measurements.list():
             if info["seat"] == seat and info["channels"]:
                 m = self.measurements.get(info["id"])
-                if self.measurement_status(m)[0] == "current":
+                if m.tune is not None and self.measurement_status(m)[0] == "current":
                     candidates.append(m)
         candidates.sort(key=lambda m: (len(m.channels) != 1, -m.taken_at))
         chosen, covered = [], set()
@@ -507,21 +511,102 @@ class Engine:
     def _measurement_fp(m: measurements.Measurement) -> str:
         return fingerprint(m.model_dump(include={"freqs", "spl", "phase", "channels", "seat", "tune", "drivers"}))
 
-    def attest_measurement(self, mid: str, source: str) -> measurements.Measurement:
-        """Owner statement: this measurement was taken with the drivers recorded now."""
-        m = self.measurements.get(mid)
-        m = m.model_copy(update={"drivers": {ch: self.driver_identity(ch) for ch in m.channels},
-                                 "drivers_source": f"attested by {source} at {time.strftime('%Y-%m-%d %H:%M')}"})
-        self.measurements.save(m)
-        self.revision += 1
-        self._log(source, f"attested drivers for measurement {m.name}")
-        return m
+    def attest_measurement(self, mid: str, source: str, *, drivers: dict | None = None,
+                           reason: str = "Trusted local owner statement of current hardware",
+                           expected_fingerprint: str | None = None, correct_existing: bool = False) -> measurements.Measurement:
+        """Record capture-time hardware; HTTP callers must supply explicit identities/evidence.
+
+        Current-design shorthand is only for trusted in-process callers. Raw data,
+        current equipment and the captured tune are never rewritten here.
+        """
+        with self._lock:
+            m = self.measurements.get(mid)
+            before = self._measurement_fp(m)
+            if expected_fingerprint is not None and expected_fingerprint != before:
+                raise MeasurementConflict("The measurement changed while it was being reviewed; reload it first")
+            if not m.channels:
+                raise EngineError("Tag the measured outputs before recording their capture-time hardware")
+            if drivers is None:
+                drivers = {ch: self.driver_identity(ch) for ch in m.channels}
+            else:
+                if set(drivers) != set(m.channels):
+                    raise EngineError("Capture hardware must identify every measured output, and no others")
+                clean = {}
+                for ch, refs in drivers.items():
+                    values = [measurements.CaptureDriver.model_validate(ref).model_dump() for ref in refs]
+                    if not values or len({v["id"] for v in values}) != len(values):
+                        raise EngineError(f"{ch}: record at least one distinct capture-time driver")
+                    if any(not v["make"].strip() or not v["model"].strip() for v in values):
+                        raise EngineError(f"{ch}: driver make and model are required")
+                    clean[ch] = sorted(values, key=lambda v: v["id"])
+                drivers = clean
+            changed = m.drivers is not None and m.drivers != drivers
+            if changed and not correct_existing:
+                raise MeasurementConflict("Capture hardware is already recorded; explicitly confirm a correction with its reason")
+            history = m.driver_history + [measurements.DriverProvenanceEvent(
+                action="correct" if changed else "attest", source=source, reason=reason,
+                drivers=drivers, previous_drivers=m.drivers, capture_fingerprint=before)]
+            m = m.model_copy(update={"drivers": drivers, "drivers_source": f"owner record: {reason}",
+                                     "driver_history": history})
+            self.measurements.save(m)
+            self.revision += 1
+            self._log(source, f"recorded capture hardware for measurement {m.name}")
+            return m
+
+    def measurement_metadata(self, mid: str) -> dict:
+        with self._lock:
+            m = self.measurements.get(mid)
+            state, why = self.measurement_status(m)
+            if not m.channels:
+                state, why = "unknown", "Tag the measured outputs before reviewing capture hardware"
+            return m.model_dump(mode="json", exclude={"freqs", "spl", "phase", "tune"}) | {
+                "status": state, "status_reason": why, "has_tune": m.tune is not None,
+                "tune_name": m.tune.name if m.tune else None, "has_phase": m.phase is not None,
+                "optimizable": state == "current" and m.tune is not None and bool(m.channels),
+                "capture_fingerprint": self._measurement_fp(m),
+                "current_drivers": {ch: self.driver_identity(ch) for ch in m.channels}}
+
+    def list_measurements(self) -> list[dict]:
+        with self._lock:
+            return [self.measurement_metadata(info["id"]) for info in self.measurements.list()]
+
+    def update_measurement(self, mid: str, fields: dict, tune_snapshot: str | None = None,
+                           clear_tune: bool = False, source: str = "ui") -> dict:
+        with self._lock:
+            m = self.measurements.get(mid)
+            fields = dict(fields)
+            if "channels" in fields:
+                fields["channels"] = sorted({self.tune.channel(ch).id for ch in fields["channels"]})
+            if clear_tune and tune_snapshot:
+                raise EngineError("Choose a capture-time tune or clear it, not both")
+            if tune_snapshot:
+                fields["tune"] = self.snapshot_tune(tune_snapshot)
+            elif clear_tune:
+                fields["tune"] = None
+            context_changed = any(key in fields and fingerprint(fields[key]) != fingerprint(getattr(m, key))
+                                  for key in ("channels", "seat", "tune"))
+            if context_changed and m.drivers is not None:
+                fields.update(drivers=None, drivers_source="Capture details changed; hardware requires review",
+                              driver_history=m.driver_history + [measurements.DriverProvenanceEvent(
+                                  action="invalidate", source=source, reason="Capture output, seat or tune changed",
+                                  previous_drivers=m.drivers, capture_fingerprint=self._measurement_fp(m))])
+            self.measurements.save(measurements.Measurement.model_validate(m.model_dump() | fields))
+            self.revision += 1
+            self._log(source, f"updated capture details for measurement {m.name}")
+            return self.measurement_metadata(mid)
+
+    def delete_measurement(self, mid: str) -> None:
+        with self._lock:
+            self.measurements.delete(mid)
+            self.revision += 1
 
     def _usable_measurements(self, seat: str) -> tuple[dict[str, measurements.Measurement], list[str]]:
         usable, notes = {}, []
         for ch, m in self._seat_measurements(seat).items():
             state, why = self.measurement_status(m)
-            if state == "current":
+            if state == "current" and m.tune is None:
+                notes.append(f"refused {m.name}: capture-time tune is unknown")
+            elif state == "current":
                 usable[ch] = m
             elif why not in notes:
                 notes.append(f"refused {why}")

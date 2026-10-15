@@ -9,10 +9,13 @@ Status: protocol and parameter map reverse-engineered statically from PC-Tool
 unverified assumption is marked PROVISIONAL in code; `docs/capture-checklist.md`
 is the plan to confirm them.
 
+For ongoing Codex/Claude work, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
+
 ## Run
 
 ```bash
 uv sync
+cd web && npm ci && npm run build && cd ..  # build the Svelte UI on a fresh checkout
 uv run helixtune serve                 # http://127.0.0.1:8765
 uv run helixtune serve --host 0.0.0.0  # reachable from your phone on the LAN
 ```

@@ -8,6 +8,7 @@ Last Updated: 2026-10-15
 - Continue the current milestone; distinguish approved product choices from review suggestions.
 - One editing agent at a time in this checkout. Use separate worktrees if simultaneous work is explicitly requested.
 - Current collaboration branch: `pi/helixtune-foundation`. The user authorized local checkpoint commits for this work. Do not push or publish without authorization.
+- Public repository: `https://github.com/mcglothi/helix-unwound`. Tim authorized its creation and pushing completed current work on 2026-10-15; this does not authorize release tags or hardware claims.
 - Preserve unrelated or unfinished work. Checkpoint complete milestones and update the handoff before switching agents.
 
 ## Hardware and private inputs

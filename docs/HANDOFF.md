@@ -9,10 +9,12 @@ Branch: `pi/helixtune-foundation`
 
 1. Read this document and `AGENTS.md`; inspect `git status` and `git log -5 --oneline`.
 2. Check AIKB active claims before editing. Only one agent edits this checkout at a time.
-3. Continue the next task below. User authorized local checkpoint commits; no push/publication.
+3. Continue the next task below. User authorized local checkpoint commits and, on 2026-10-15, the public GitHub repository and pushing completed current work. No release tagging or hardware claims.
 4. Update this document and the AIKB index at the next complete milestone.
 
 ## Approved direction
+
+- Product name: **Helix Unwound**. Tim's brand concept: a double helix unwinding at the top and evaporating into music notes, expressing freedom. See `docs/BRAND.md`. Internal package/CLI still `helixtune`.
 
 - Target HELIX DSP PRO MK2; Mac-first workstation backed by a headless Python engine with HTTP/MCP and a Svelte client. Preserve Linux/truck-computer viability.
 - Studio Console visual direction, consistent themes, Drive/Setup/System views, phone/tablet/desktop support, foldables considered.
@@ -184,7 +186,7 @@ These are review recommendations, not approval for every proposed product featur
 - `cd web && npm ci && npm run check && npm test && npm run build`.
 - `uv run helixtune serve` serves built Svelte UI when available; use a temporary `--data` directory for experiments.
 - Local private inputs: ignored `artifacts/extracted/app/deviceFiles/DSPPro2.at01` and ignored `captures/backups-2018/`. Some original tests skip when these are missing. New foundation regressions must remain runnable without them.
-- No Git remote is configured. All checkpoints are local.
+- Public GitHub repository: https://github.com/mcglothi/helix-unwound (Tim authorized public creation/push on 2026-10-15). Initial default `main` and collaboration branch were pushed; subsequent feature work remains on the collaboration branch for review.
 
 ## Known limits at handoff
 

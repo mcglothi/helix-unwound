@@ -11,7 +11,10 @@ Status: protocol and parameter map reverse-engineered statically from PC-Tool
 unverified assumption is marked PROVISIONAL in code; `docs/capture-checklist.md`
 is the plan to confirm them.
 
-For ongoing Codex/Claude work, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
+For ongoing development and review, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
+The visual concept is a double helix unwinding into music notes—freedom and a second
+life for the hardware. See [`docs/BRAND.md`](docs/BRAND.md) for branding exploration.
+The package and CLI are currently named `helixtune`.
 
 The **Measurements** view reviews capture-time hardware separately from installed
 drivers, records owner evidence, and preserves corrections. Historical captures

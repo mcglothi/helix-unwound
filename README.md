@@ -27,6 +27,13 @@ included here. `serve` finds it in `artifacts/extracted/app/deviceFiles/`,
 State lives in `~/.helixtune/` (`current.json`, `snapshots/`, `safety.json`,
 `events.jsonl`).
 
+If a device update fails, the engine marks its state **uncertain** and pauses
+incremental writes. The last accepted application tune is retained; later edits
+are staged offline. Review the tune before using **Overwrite DSP…** to send all
+managed parameters again. This does not undo any writes that may already have
+reached the DSP. A software baseline records completed write transactions, not
+independent hardware readback verification; protocol/ACK semantics remain provisional.
+
 ## Hardware
 
 ```bash

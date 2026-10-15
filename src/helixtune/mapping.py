@@ -129,7 +129,9 @@ class DeviceMapping:
         fs = tune.sample_rate
         img: dict[int, bytes] = {}
         img[self.master] = word_824(10 ** (tune.master_gain_db / 20))
-        for ch, ad in zip(tune.channels, self.channels):
+        # Physical addresses belong to output IDs, independent of client list order.
+        for cid, ad in zip(CHANNELS, self.channels):
+            ch = tune.channel(cid)
             for addrs, bq in zip(ad.eq, self.eq_sections(ch, fs)):
                 self._put_bq(img, addrs, bq)
             bqs, fos = self.crossover_sections(ch, fs)

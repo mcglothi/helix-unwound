@@ -8,6 +8,7 @@
   const dev = $derived(app.status?.device)
   const devText = $derived(
     !dev || dev.kind === 'none' ? 'Offline · editing only'
+      : dev.sync_state === 'uncertain' ? `${dev.model ?? dev.kind} · state unknown`
       : `${dev.model ?? dev.kind} · ${dev.writes_enabled ? (dev.baselined ? 'LIVE' : 'not synced') : 'read-only'}`,
   )
   const ab = $derived(app.status?.ab)
@@ -67,10 +68,14 @@
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/></svg>
   </button>
 </header>
+{#if dev?.last_error}
+  <div class="device-error" role="alert">{dev.last_error} Edits are staged offline until then.</div>
+{/if}
 <Settings bind:open={settingsOpen} />
 
 <style>
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  .device-error { padding: 12px 16px; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--warn); }
   .brand { font-weight: 600; font-size: 17px; letter-spacing: .02em; }
   .brand span { color: var(--accent-text); }
   .modes { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }

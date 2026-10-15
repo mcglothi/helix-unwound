@@ -65,6 +65,14 @@ class Channel(BaseModel):
     # input mix: linear gain from each source input (L, R). {"L": 0.5, "R": 0.5} = mono sum.
     mix: dict[str, float] = Field(default_factory=dict)
 
+    @field_validator("id")
+    @classmethod
+    def _physical_output(cls, value: str) -> str:
+        value = value.upper()
+        if value not in tuple(CHANNELS):
+            raise ValueError(f"channel id must be one of {CHANNELS}")
+        return value
+
     @field_validator("mix")
     @classmethod
     def _mix(cls, v):
@@ -91,6 +99,21 @@ class Tune(BaseModel):
     channels: list[Channel] = Field(default_factory=lambda: [
         Channel(id=c, mix={INPUTS[i % 2]: 1.0}) for i, c in enumerate(CHANNELS)])
     notes: str = ""
+
+    @field_validator("sample_rate")
+    @classmethod
+    def _supported_sample_rate(cls, value: float) -> float:
+        if value != SAMPLE_RATE:
+            raise ValueError(f"HELIX DSP PRO MK2 requires sample_rate={SAMPLE_RATE:g}")
+        return value
+
+    @field_validator("channels")
+    @classmethod
+    def _physical_outputs(cls, channels: list[Channel]) -> list[Channel]:
+        by_id = {ch.id: ch for ch in channels}
+        if len(channels) != len(CHANNELS) or set(by_id) != set(CHANNELS):
+            raise ValueError(f"exactly one channel for each physical output {CHANNELS} is required")
+        return [by_id[cid] for cid in CHANNELS]
 
     @model_validator(mode="after")
     def _default_routing(self):

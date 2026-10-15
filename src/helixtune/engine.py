@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -47,7 +48,9 @@ class DeviceState:
     model: str | None = None
     model_type: int | None = None
     writes_enabled: bool = False
-    baselined: bool = False         # device RAM known to match applied_image
+    baselined: bool = False         # completed writes acknowledged; not hardware readback verification
+    sync_state: Literal["disconnected", "unsynchronized", "applying", "synchronized", "uncertain"] = "disconnected"
+    last_error: str | None = None
 
 
 @dataclass
@@ -113,8 +116,10 @@ class Engine:
                 raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
             self.client = client
             self.device = DeviceState(kind=kind, port=port, model=info.model_string,
-                                      model_type=info.model_type, writes_enabled=client.allow_writes)
+                                      model_type=info.model_type, writes_enabled=client.allow_writes,
+                                      sync_state="unsynchronized")
             self.applied_image = None
+            self.pending_writes = 0
             self._log("engine", f"attached {kind} {port or ''} ({info.model_string})")
             return self.device
 
@@ -133,10 +138,12 @@ class Engine:
             if confirm != "OVERWRITE":
                 raise EngineError('full push overwrites the tune on the DSP; pass confirm="OVERWRITE"')
             self._require_writable()
-            img = self.mapping.render(self.tune)
-            n = self._write(mapping.diff(None, img))
-            self.applied_image = img
-            self.device.baselined = True
+            tune = Tune.model_validate(self.tune.model_dump())
+            problems = self._check(tune)
+            if problems:
+                raise SafetyRejected(problems)
+            img = self.mapping.render(tune)
+            n = self._write_image(img, full=True)
             self._log("engine", "full push to device", n)
             return n
 
@@ -152,6 +159,39 @@ class Engine:
             self.client.write_ram(addr, data)
         return len(ops)
 
+    def _write_image(self, img: dict[int, bytes], *, full: bool = False) -> int:
+        """Only a completely acknowledged update establishes a software baseline.
+
+        A timeout may mean a write landed but its reply was lost. Do not retry a
+        partial diff or claim rollback: stop incremental writes until a person
+        deliberately overwrites the managed parameters again.
+        """
+        self._require_writable()
+        if not full and not self.device.baselined:
+            raise EngineError("device has no baseline; a confirmed full overwrite is required")
+        changes = mapping.diff(None if full else self.applied_image, img)
+        self.device.sync_state = "applying"
+        self.device.baselined = False
+        try:
+            n = self._write(changes)
+        except Exception as exc:
+            self.applied_image = None
+            self.pending_writes = len(img)
+            self.device.sync_state = "uncertain"
+            self.device.last_error = (
+                "DSP update failed; device state is unknown. Incremental writes are paused. "
+                "Review the tune and perform a confirmed full overwrite to resynchronize."
+            )
+            self.revision += 1
+            self._log("engine", self.device.last_error)
+            raise EngineError(self.device.last_error) from exc
+        self.applied_image = img
+        self.device.baselined = True
+        self.device.sync_state = "synchronized"
+        self.device.last_error = None
+        self.pending_writes = 0
+        return n
+
     # ---- tune changes ---------------------------------------------------------------
 
     def apply(self, new: Tune, source: str, summary: str) -> dict:
@@ -165,8 +205,7 @@ class Engine:
             img = self.mapping.render(new)  # raises MappingError if unrepresentable
             writes = 0
             if self.client is not None and self.device.writes_enabled and self.device.baselined:
-                writes = self._write(mapping.diff(self.applied_image, img))
-                self.applied_image = img
+                writes = self._write_image(img)
             else:
                 self.pending_writes = len(mapping.diff(self.applied_image, img))
             self.history.append(self.tune)
@@ -188,14 +227,14 @@ class Engine:
         with self._lock:
             if not self.history:
                 raise EngineError("nothing to undo")
-            prev = self.history.pop()
+            prev = self.history[-1]
             cur = self.tune
             # undo is allowed to lower or restore; still safety-checked without step limits
             problems = self._check(prev)
             if problems:
-                self.history.append(prev)
                 raise SafetyRejected(problems)
             res = self._adopt(prev, source, "undo")
+            self.history.pop()
             self.redo_stack.append(cur)
             return res
 
@@ -203,8 +242,9 @@ class Engine:
         img = self.mapping.render(t)
         writes = 0
         if self.client is not None and self.device.writes_enabled and self.device.baselined:
-            writes = self._write(mapping.diff(self.applied_image, img))
-            self.applied_image = img
+            writes = self._write_image(img)
+        else:
+            self.pending_writes = len(mapping.diff(self.applied_image, img))
         self.tune = t
         self._autosave()
         self._log(source, summary, writes)
@@ -232,8 +272,10 @@ class Engine:
             problems = self._check(t)
             if problems:
                 raise SafetyRejected(problems)
-            self.history.append(self.tune)
-            return self._adopt(t, source, f"loaded snapshot {name}")
+            previous = self.tune
+            result = self._adopt(t, source, f"loaded snapshot {name}")
+            self.history.append(previous)
+            return result
 
     def snapshot_tune(self, name: str) -> Tune:
         path = self.data_dir / "snapshots" / f"{name}.json"
@@ -421,14 +463,15 @@ class Engine:
                 raise EngineError("set both A and B first")
             cur = self.ab["active"] or "A"
             nxt = "B" if cur == "A" else "A"
-            if self.ab["active"]:
-                self.ab[cur] = self.tune.model_copy(deep=True)  # keep edits made while on this slot
             t = self.ab[nxt]
             problems = self._check(t)
             if problems:
                 raise SafetyRejected(problems)
-            self.history.append(self.tune)
+            previous = self.tune
             self._adopt(t.model_copy(deep=True), source, f"A/B → {nxt} ({t.name})")
+            self.history.append(previous)
+            if self.ab["active"]:
+                self.ab[cur] = previous.model_copy(deep=True)  # retain edits only after a successful switch
             self.ab["active"] = nxt
             return self.ab_state()
 

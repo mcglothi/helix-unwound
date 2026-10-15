@@ -18,6 +18,8 @@ export interface Tune {
 export interface Device {
   kind: 'none' | 'emulator' | 'serial'; port: string | null; model: string | null
   writes_enabled: boolean; baselined: boolean
+  sync_state: 'disconnected' | 'unsynchronized' | 'applying' | 'synchronized' | 'uncertain'
+  last_error: string | null
 }
 export interface EngineEvent { ts: number; source: string; summary: string; writes: number }
 export interface ProposalInfo { id: string; title: string; kind: string; changes: number; source: string }

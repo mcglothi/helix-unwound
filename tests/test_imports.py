@@ -89,6 +89,10 @@ def test_proposals_and_ab(tmp_path):
     with open(MDAT, "rb") as fh:
         c.post("/api/import/mdat", files={"file": ("m.mdat", fh)}, data={"tune_snapshot": "Base - DRV-TA- No EQ"})
     c.post("/api/snapshots/Base - DRV-TA- No EQ/load")
+    refused = c.post("/api/propose/auto-eq", json={"channels": ["C", "I"]}).json()
+    assert refused["edits"] == [] and any("unknown" in n for n in refused["notes"])  # legacy provenance
+    for m in c.get("/api/measurements").json():
+        assert c.post(f"/api/measurements/{m['id']}/attest").status_code == 200
     p = c.post("/api/propose/auto-eq", json={"channels": ["C", "I"]}).json()
     chans = {e["channel"] for e in p["edits"]}
     assert chans == {"C", "I", "J"}  # subs measured together -> linked

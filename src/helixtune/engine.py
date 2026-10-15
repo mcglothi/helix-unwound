@@ -16,7 +16,7 @@ from typing import Literal
 import numpy as np
 
 from . import afpx, autotune, equipment, mapping, measurements, safety, targets
-from .proposals import Proposal
+from .proposals import Proposal, ProposalConflict, ProposalContext, fingerprint
 from .devicefile import ParamMap
 from .model import Tune
 from .protocol import commands
@@ -416,6 +416,74 @@ class Engine:
         band = (grid > 300) & (grid < 3000)
         return tgt - tgt[band].mean() + pred[band].mean()
 
+    # -- provenance: which physical drivers a measurement / proposal is about --
+
+    def driver_identity(self, channel: str) -> list[dict[str, str]]:
+        """Recorded drivers fed by a DSP output (component id + make/model), sorted."""
+        refs = [{"id": c.id, "make": c.make, "model": c.model} for c in self.design.components
+                if c.kind in (equipment.Kind.SPEAKER, equipment.Kind.SUBWOOFER) and channel in c.channels]
+        return sorted(refs, key=lambda r: r["id"])
+
+    def measurement_status(self, m: measurements.Measurement) -> tuple[str, str]:
+        """('current' | 'unknown' | 'stale', reason) for using m to optimise today's drivers."""
+        if m.drivers is None:
+            return "unknown", f"{m.name}: drivers at measurement time are unknown (attest them to use it)"
+        for ch in m.channels:
+            then, now = m.drivers.get(ch), self.driver_identity(ch)
+            if then != now:
+                was = ", ".join(f"{r['make']} {r['model']}".strip() or r["id"] for r in then or []) or "none"
+                cur = ", ".join(f"{r['make']} {r['model']}".strip() or r["id"] for r in now) or "none"
+                return "stale", f"{m.name}: channel {ch} was measured with {was}; now {cur}"
+        return "current", ""
+
+    @staticmethod
+    def _measurement_fp(m: measurements.Measurement) -> str:
+        return fingerprint(m.model_dump(include={"freqs", "spl", "phase", "channels", "seat", "tune", "drivers"}))
+
+    def attest_measurement(self, mid: str, source: str) -> measurements.Measurement:
+        """Owner statement: this measurement was taken with the drivers recorded now."""
+        m = self.measurements.get(mid)
+        m = m.model_copy(update={"drivers": {ch: self.driver_identity(ch) for ch in m.channels},
+                                 "drivers_source": f"attested by {source} at {time.strftime('%Y-%m-%d %H:%M')}"})
+        self.measurements.save(m)
+        self.revision += 1
+        self._log(source, f"attested drivers for measurement {m.name}")
+        return m
+
+    def _usable_measurements(self, seat: str) -> tuple[dict[str, measurements.Measurement], list[str]]:
+        usable, notes = {}, []
+        for ch, m in self._seat_measurements(seat).items():
+            state, why = self.measurement_status(m)
+            if state == "current":
+                usable[ch] = m
+            elif why not in notes:
+                notes.append(f"refused {why}")
+        return usable, notes
+
+    def _context(self, seat: str | None, used: dict[str, measurements.Measurement], channels: list[str],
+                 target: bool) -> ProposalContext:
+        return ProposalContext(
+            seat=seat,
+            target=fingerprint(self.target().model_dump()) if target else None,
+            measurements={m.id: self._measurement_fp(m) for m in used.values()},
+            drivers={ch: fingerprint(self.driver_identity(ch)) for ch in sorted(set(channels))})
+
+    def proposal_conflicts(self, p: Proposal) -> list[str]:
+        out = p.field_conflicts(self.tune)
+        ctx = p.context
+        if ctx.target is not None and fingerprint(self.target().model_dump()) != ctx.target:
+            out.append("target curve changed since this proposal was computed")
+        for mid, fp in ctx.measurements.items():
+            try:
+                if self._measurement_fp(self.measurements.get(mid)) != fp:
+                    out.append(f"measurement {mid} changed since this proposal was computed")
+            except KeyError:
+                out.append(f"measurement {mid} no longer exists")
+        for ch, fp in ctx.drivers.items():
+            if fingerprint(self.driver_identity(ch)) != fp:
+                out.append(f"drivers recorded on channel {ch} changed since this proposal was computed")
+        return out
+
     def _store_proposal(self, p: Proposal, source: str) -> dict:
         p.source = source
         self.proposals[p.id] = p
@@ -426,20 +494,27 @@ class Engine:
 
     def propose_auto_eq(self, channels: list[str] | None, seat: str = "driver", max_bands: int = 8,
                         max_freq: float = 8000, replace: bool = True, source: str = "engine") -> dict:
-        meas = self._seat_measurements(seat)
+        meas, refused = self._usable_measurements(seat)
         chans = [c.upper() for c in channels] if channels else sorted(meas)
         max_boost = min(3.0, self.policy.max_eq_boost_db, self.policy.max_boost_step_db)
         p = autotune.propose_auto_eq(self.tune, meas, self._target_on_grid(seat), chans, max_bands, max_freq,
                                      max_boost, replace)
+        p.notes = refused + p.notes
+        used = {ch: meas[ch] for ch in chans if ch in meas}
+        p.context = self._context(seat, used, [e.channel for e in p.edits if e.channel], target=True)
         return self._store_proposal(p, source)
 
     def propose_levels(self, seat: str = "driver", source: str = "engine") -> dict:
-        p = autotune.propose_levels(self.tune, self._seat_measurements(seat), self._target_on_grid(seat),
-                                    self.policy.max_boost_step_db)
+        meas, refused = self._usable_measurements(seat)
+        p = autotune.propose_levels(self.tune, meas, self._target_on_grid(seat), self.policy.max_boost_step_db)
+        p.notes = refused + p.notes
+        p.context = self._context(seat, meas, [e.channel for e in p.edits if e.channel], target=True)
         return self._store_proposal(p, source)
 
     def propose_alignment(self, distances_cm: dict[str, float], source: str = "engine") -> dict:
-        return self._store_proposal(autotune.propose_alignment(self.tune, distances_cm), source)
+        p = autotune.propose_alignment(self.tune, distances_cm)
+        p.context = self._context(None, {}, [], target=False)  # bound by field before-values only
+        return self._store_proposal(p, source)
 
     def proposal(self, pid: str) -> Proposal:
         if pid not in self.proposals:
@@ -447,14 +522,24 @@ class Engine:
         return self.proposals[pid]
 
     def preview_proposal(self, pid: str, seat: str = "driver", smoothing: float = 6, points: int = 200) -> dict:
-        draft = self.proposal(pid).apply_to(self.tune)
-        return self.system_view(seat, smoothing, points, tune=draft)
+        with self._lock:
+            p = self.proposal(pid)
+            conflicts = self.proposal_conflicts(p)
+            if conflicts:
+                raise ProposalConflict(conflicts)
+            draft = p.apply_to(self.tune)
+        return self.system_view(p.context.seat or seat, smoothing, points, tune=draft)
 
     def apply_proposal(self, pid: str, source: str) -> dict:
-        p = self.proposal(pid)
-        res = self.apply(p.apply_to(self.tune), source, f"applied proposal: {p.title}")
-        self.proposals.pop(pid, None)
-        return res
+        with self._lock:
+            p = self.proposal(pid)
+            conflicts = self.proposal_conflicts(p)
+            if conflicts:
+                self._log(source, f"CONFLICT applying {p.title}: {'; '.join(conflicts)}")
+                raise ProposalConflict(conflicts)  # accepted tune and proposal left unchanged
+            res = self.apply(p.apply_to(self.tune), source, f"applied proposal: {p.title}")
+            self.proposals.pop(pid, None)
+            return res
 
     # ---- A/B -----------------------------------------------------------------------------
 

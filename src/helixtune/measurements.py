@@ -39,6 +39,10 @@ class Measurement(BaseModel):
     spl: list[float]
     phase: list[float] | None = None
     tune: Tune | None = None                # tune active when measured (None = unknown)
+    # physical drivers that were on each measured channel: channel -> [{id, make, model}].
+    # None = unknown provenance (e.g. imported legacy files); never inferred from import time.
+    drivers: dict[str, list[dict[str, str]]] | None = None
+    drivers_source: str = ""                # how `drivers` was established, e.g. "owner attested …"
 
 
 def resample(freqs, spl, grid=GRID, smoothing_oct: float = 1 / 24) -> list[float]:
@@ -85,7 +89,8 @@ class Store:
         for p in sorted(self.root.glob("*.json")):
             d = json.loads(p.read_text())
             out.append({k: d[k] for k in ("id", "name", "kind", "channels", "seat", "taken_at", "source", "notes")}
-                       | {"has_tune": d.get("tune") is not None, "has_phase": d.get("phase") is not None})
+                       | {"has_tune": d.get("tune") is not None, "has_phase": d.get("phase") is not None,
+                          "drivers": d.get("drivers"), "drivers_source": d.get("drivers_source", "")})
         return sorted(out, key=lambda d: d["taken_at"])
 
     def delete(self, mid: str) -> None:

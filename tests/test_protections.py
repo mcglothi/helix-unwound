@@ -67,7 +67,9 @@ def test_every_tune_adoption_path_enforces_saved_floors(engine, operation):
         elif operation == "ab":
             engine.ab_toggle("test")
         elif operation == "proposal":
-            proposal = Proposal(kind="test", title="remove high-pass", edits=[Edit(channel="A", field="hp", value=None)])
+            # a correctly bound proposal (before-value matches), so protection is what rejects it
+            proposal = Proposal(kind="test", title="remove high-pass", edits=[
+                Edit(channel="A", field="hp", value=None, before=engine.tune.channel("A").hp)])
             engine.proposals[proposal.id] = proposal
             engine.apply_proposal(proposal.id, "agent")
         elif operation == "replace":

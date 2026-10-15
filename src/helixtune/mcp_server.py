@@ -197,7 +197,9 @@ def propose_auto_eq(channels: str = "", seat: str = "driver", max_bands: int = 8
     """Compute (do NOT apply) PEQ bands that bring each channel's predicted in-car response
     toward the target shape. channels: 'A,C' (blank = every measured channel). Prefers cuts,
     caps boosts. Returns a proposal id with per-channel error before/after. Show the user the
-    changes, optionally preview_proposal, then apply_proposal if they agree."""
+    changes, optionally preview_proposal, then apply_proposal if they agree. Measurements whose
+    drivers are unknown or no longer installed are refused (see notes); only the owner can
+    attest a measurement's drivers."""
     body = {"channels": [c.strip() for c in channels.split(",") if c.strip()] or None, "seat": seat,
             "max_bands": max_bands, "max_freq": max_freq, "replace": replace}
     return _call("POST", "/api/propose/auto-eq", body)
@@ -225,7 +227,9 @@ def preview_proposal(proposal_id: str, seat: str = "driver", points: int = 48) -
 @mcp.tool()
 def apply_proposal(proposal_id: str) -> str:
     """Apply a proposal (goes live on the DSP if connected; safety-checked; undoable).
-    Only do this after the user has agreed to the listed changes."""
+    Only do this after the user has agreed to the listed changes. A 409 "conflict" means
+    the tune, target, measurements or recorded drivers changed since it was computed:
+    nothing was changed; recompute a fresh proposal instead of retrying."""
     return _call("POST", f"/api/proposals/{proposal_id}/apply")
 
 

@@ -20,9 +20,15 @@
       </ul>
     {/if}
     {#each p.notes as n}<p class="note">{n}</p>{/each}
+    {#if app.proposalConflicts.length}
+      <div class="conflict" role="alert">
+        <b>Out of date — recompute this proposal.</b>
+        <ul>{#each app.proposalConflicts as c}<li>{c}</li>{/each}</ul>
+      </div>
+    {/if}
     <div class="actions">
       <button class="ghost" onclick={() => app.discardProposal()}>Discard</button>
-      <button class="primary" disabled={!p.edits.length} onclick={() => app.applyProposal()}>
+      <button class="primary" disabled={!p.edits.length || app.proposalConflicts.length > 0} onclick={() => app.applyProposal()}>
         Apply{app.status?.device.writes_enabled && app.status?.device.baselined ? ' to DSP' : ''}
       </button>
     </div>
@@ -41,4 +47,7 @@
   .note { margin: 0; font-size: 13px; color: var(--muted); }
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .fine { font-size: 12px; margin: 0; }
+  .conflict { border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  .conflict b { color: var(--warn); }
+  .conflict ul { margin: 4px 0 0; padding-left: 18px; }
 </style>

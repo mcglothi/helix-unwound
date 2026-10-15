@@ -7,7 +7,9 @@ export type Mode = 'studio' | 'drive' | 'setup' | 'system'
 
 class ApiError extends Error {
   constructor(public status: number, public body: any) {
-    super(body?.problems ? body.problems.join('; ') : (body?.detail ? JSON.stringify(body.detail) : `HTTP ${status}`))
+    super(body?.conflicts ? `Proposal is out of date: ${body.conflicts.join('; ')}. Recompute it.`
+      : body?.problems ? body.problems.join('; ')
+      : (typeof body?.detail === 'string' ? body.detail : body?.detail ? JSON.stringify(body.detail) : `HTTP ${status}`))
   }
 }
 
@@ -38,6 +40,7 @@ class AppState {
   toasts = $state<Toast[]>([])
   proposal = $state<Proposal | null>(null)       // the one open for review
   preview = $state<SystemView | null>(null)      // system view if it were applied
+  proposalConflicts = $state<string[]>([])       // why the open proposal can no longer be applied
   busy = $state(false)
   design = $state<Design | null>(null)
   specFields = $state<SpecFields>({})
@@ -85,6 +88,7 @@ class AppState {
         const latest = s.proposals.at(-1)
         if (latest && !this.proposal) await this.openProposal(latest.id)
         if (this.proposal && !s.proposals.some((p) => p.id === this.proposal!.id)) this.closeProposal()
+        else if (this.proposal) await this.refreshPreview()
       }
     } catch {
       /* engine restarting; keep last state */
@@ -153,11 +157,22 @@ class AppState {
   }
   async openProposal(id: string) {
     this.proposal = await api<Proposal>('GET', `/api/proposals/${id}`)
-    this.preview = await api<SystemView>('GET', `/api/proposals/${id}/preview?seat=${this.seat}&smoothing=${this.smoothing}&points=240`)
+    await this.refreshPreview()
+  }
+  async refreshPreview() {
+    if (!this.proposal) return
+    try {
+      this.preview = await api<SystemView>('GET', `/api/proposals/${this.proposal.id}/preview?seat=${this.seat}&smoothing=${this.smoothing}&points=240`)
+      this.proposalConflicts = []
+    } catch (e: any) {
+      this.preview = null
+      this.proposalConflicts = e?.body?.conflicts ?? [e.message ?? String(e)]
+    }
   }
   closeProposal() {
     this.proposal = null
     this.preview = null
+    this.proposalConflicts = []
   }
   async applyProposal() {
     if (!this.proposal) return

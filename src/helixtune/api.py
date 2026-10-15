@@ -23,6 +23,7 @@ from .targets import Target
 from . import equipment as eq
 from .media import Library
 from .access import AccessControl, COOKIE
+from .proposals import ProposalConflict
 from .safety import OutputProtection
 
 WEB = Path(__file__).parent / "web"
@@ -194,6 +195,11 @@ def create_app(engine: Engine) -> FastAPI:
         response.delete_cookie(COOKIE)
         return response
 
+    @app.exception_handler(ProposalConflict)
+    async def _conflict(_, e: ProposalConflict):
+        return JSONResponse({"error": "conflict", "conflicts": e.conflicts,
+                             "detail": "Recompute the proposal; nothing was changed."}, status_code=409)
+
     @app.exception_handler(SafetyRejected)
     async def _safety(_, e: SafetyRejected):
         return JSONResponse({"error": "safety", "problems": e.problems}, status_code=409)
@@ -362,6 +368,14 @@ def create_app(engine: Engine) -> FastAPI:
         if p.tune_snapshot:
             upd["tune"] = engine.snapshot_tune(p.tune_snapshot)
         return engine.measurements.save(m.model_copy(update=upd)).model_dump(exclude={"freqs", "spl", "phase", "tune"})
+
+    @app.post("/api/measurements/{mid}/attest")
+    def attest_measurement(mid: str, request: Request):
+        """Owner statement that this measurement was taken with the drivers recorded now."""
+        if request.state.principal != "owner":
+            raise HTTPException(403, "Only the owner can attest measurement provenance")
+        m = engine.attest_measurement(mid, "owner")
+        return {"id": m.id, "drivers": m.drivers, "drivers_source": m.drivers_source}
 
     @app.delete("/api/measurements/{mid}")
     def delete_measurement(mid: str):

@@ -33,6 +33,10 @@ class SnapshotExists(EngineError):
         self.name = name
 
 
+class NoTrustedAnchor(EngineError):
+    """A solver needs a trustworthy reference and none exists; refuse instead of guessing."""
+
+
 class SafetyRejected(EngineError):
     def __init__(self, problems: list[str]):
         super().__init__("; ".join(problems))
@@ -421,16 +425,53 @@ class Engine:
                         single.add(c)
         return out
 
-    def _target_on_grid(self, seat: str, target: str | None = None) -> np.ndarray:
-        """Current target, level-matched to the predicted system at this seat (300 Hz-3 kHz)."""
+    # -- solver targets: built only from trusted, non-overlapping measurements --
+
+    SOLVER_INPUT_FIELDS = {"role", "hp", "lp", "eq", "gain_db", "mute", "mix"}
+
+    def channel_inputs(self, tune: Tune, channel: str) -> str:
+        """Fingerprint of the channel settings the magnitude solvers consume (not names/colours)."""
+        return fingerprint(tune.channel(channel).model_dump(include=self.SOLVER_INPUT_FIELDS))
+
+    def _anchor_measurements(self, seat: str) -> list[measurements.Measurement]:
+        """Trusted measurements for level anchoring: current provenance, no channel counted twice.
+        Single-channel and newer measurements win."""
+        candidates = []
+        for info in self.measurements.list():
+            if info["seat"] == seat and info["channels"]:
+                m = self.measurements.get(info["id"])
+                if self.measurement_status(m)[0] == "current":
+                    candidates.append(m)
+        candidates.sort(key=lambda m: (len(m.channels) != 1, -m.taken_at))
+        chosen, covered = [], set()
+        for m in candidates:
+            if covered.isdisjoint(m.channels):
+                chosen.append(m)
+                covered.update(m.channels)
+        return chosen
+
+    def solver_target(self, seat: str, mode: str) -> tuple[np.ndarray, dict[str, str]]:
+        """Target array a solver uses, plus the anchor measurements it depends on.
+
+        shape: the target curve itself (auto-EQ fits shape and levels it internally).
+        level: the target placed at the level of the trusted, predicted system (300 Hz-3 kHz).
+        Raises NoTrustedAnchor rather than inventing a reference from untrusted data."""
         grid = measurements.GRID
-        tgt = self.target(target).at(grid)
-        view = self.system_view(seat, smoothing=6, points=len(grid), target=target)
-        if view.get("predicted") is None:
-            return tgt
-        pred = np.asarray(view["predicted"])
+        tgt = self.target().at(grid)
+        if mode == "shape":
+            return tgt, {}
+        anchor = self._anchor_measurements(seat)
         band = (grid > 300) & (grid < 3000)
-        return tgt - tgt[band].mean() + pred[band].mean()
+        if not anchor:
+            raise NoTrustedAnchor(f"no trusted measurement at the {seat} seat to set a level reference "
+                                  "(measurements with unknown or outdated drivers are not used)")
+        power = sum(10 ** (measurements.smooth(measurements.predict(m, self.tune, grid), grid, 6) / 10) for m in anchor)
+        pred = 10 * np.log10(power)
+        return tgt - tgt[band].mean() + pred[band].mean(), {m.id: self._measurement_fp(m) for m in anchor}
+
+    @staticmethod
+    def _target_fp(arr: np.ndarray) -> str:
+        return fingerprint(np.round(arr, 3).tolist())
 
     # -- provenance: which physical drivers a measurement / proposal is about --
 
@@ -477,18 +518,30 @@ class Engine:
         return usable, notes
 
     def _context(self, seat: str | None, used: dict[str, measurements.Measurement], channels: list[str],
-                 target: bool) -> ProposalContext:
+                 target_mode: str | None = None, target_arr: np.ndarray | None = None,
+                 anchor: dict[str, str] | None = None, driver_channels: list[str] | None = None) -> ProposalContext:
+        chans = sorted(set(channels) | {c for m in used.values() for c in m.channels})
         return ProposalContext(
-            seat=seat,
-            target=fingerprint(self.target().model_dump()) if target else None,
+            seat=seat, target_mode=target_mode,
+            target=self._target_fp(target_arr) if target_arr is not None else None,
+            anchor=anchor or {},
             measurements={m.id: self._measurement_fp(m) for m in used.values()},
-            drivers={ch: fingerprint(self.driver_identity(ch)) for ch in sorted(set(channels))})
+            drivers={ch: fingerprint(self.driver_identity(ch)) for ch in sorted(set(driver_channels or chans))},
+            inputs={ch: self.channel_inputs(self.tune, ch) for ch in chans})
 
     def proposal_conflicts(self, p: Proposal) -> list[str]:
         out = p.field_conflicts(self.tune)
         ctx = p.context
-        if ctx.target is not None and fingerprint(self.target().model_dump()) != ctx.target:
-            out.append("target curve changed since this proposal was computed")
+        for ch, fp in ctx.inputs.items():
+            if self.channel_inputs(self.tune, ch) != fp:
+                out.append(f"channel {ch} processing (role/filters/EQ/level/mute/routing) changed since this proposal")
+        if ctx.target_mode is not None:
+            try:
+                arr, _ = self.solver_target(ctx.seat or "driver", ctx.target_mode)
+                if self._target_fp(arr) != ctx.target:
+                    out.append("the solver target (curve or its trusted level reference) changed since this proposal")
+            except NoTrustedAnchor as e:
+                out.append(str(e))
         for mid, fp in ctx.measurements.items():
             try:
                 if self._measurement_fp(self.measurements.get(mid)) != fp:
@@ -513,23 +566,34 @@ class Engine:
         meas, refused = self._usable_measurements(seat)
         chans = [c.upper() for c in channels] if channels else sorted(meas)
         max_boost = min(3.0, self.policy.max_eq_boost_db, self.policy.max_boost_step_db)
-        p = autotune.propose_auto_eq(self.tune, meas, self._target_on_grid(seat), chans, max_bands, max_freq,
-                                     max_boost, replace)
+        tgt, _ = self.solver_target(seat, "shape")
+        p = autotune.propose_auto_eq(self.tune, meas, tgt, chans, max_bands, max_freq, max_boost, replace)
         p.notes = refused + p.notes
         used = {ch: meas[ch] for ch in chans if ch in meas}
-        p.context = self._context(seat, used, [e.channel for e in p.edits if e.channel], target=True)
+        p.context = self._context(seat, used, [e.channel for e in p.edits if e.channel], "shape", tgt)
         return self._store_proposal(p, source)
 
     def propose_levels(self, seat: str = "driver", source: str = "engine") -> dict:
         meas, refused = self._usable_measurements(seat)
-        p = autotune.propose_levels(self.tune, meas, self._target_on_grid(seat), self.policy.max_boost_step_db)
+        try:
+            tgt, anchor = self.solver_target(seat, "level")
+        except NoTrustedAnchor as e:
+            return self._store_proposal(Proposal(kind="levels", title="Match driver levels to target", edits=[],
+                                           notes=refused + [f"refused: {e}"]), source)
+        p = autotune.propose_levels(self.tune, meas, tgt, self.policy.max_boost_step_db)
         p.notes = refused + p.notes
-        p.context = self._context(seat, meas, [e.channel for e in p.edits if e.channel], target=True)
+        anchor_meas = [self.measurements.get(mid) for mid in anchor]
+        anchor_chans = [c for m in anchor_meas for c in m.channels]
+        p.context = self._context(seat, meas, [e.channel for e in p.edits if e.channel] + anchor_chans,
+                                  "level", tgt, anchor)
         return self._store_proposal(p, source)
 
     def propose_alignment(self, distances_cm: dict[str, float], source: str = "engine") -> dict:
         p = autotune.propose_alignment(self.tune, distances_cm)
-        p.context = self._context(None, {}, [], target=False)  # bound by field before-values only
+        # distances describe physical drivers: bind which drivers were on every measured channel
+        measured = [c.upper() for c, d in distances_cm.items() if d]
+        p.context = self._context(None, {}, [], driver_channels=measured)
+        p.context.inputs = {}  # delays only; the edited fields' before-values cover the rest
         return self._store_proposal(p, source)
 
     def proposal(self, pid: str) -> Proposal:

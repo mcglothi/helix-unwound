@@ -104,3 +104,75 @@ def test_conflict_over_http_and_attest_is_owner_only(engine):
     assert r.status_code == 409 and r.json()["error"] == "conflict" and r.json()["conflicts"]
     assert agent.get(f"/api/proposals/{pid}/preview").status_code == 409
     assert agent.get(f"/api/proposals/{pid}").status_code == 200
+
+
+# ---- solver inputs, not just destinations (review of 39aed64) ---------------------------
+
+def test_crossover_change_after_eq_fit_conflicts(engine):
+    pid = _ready(engine)
+    engine.edit("test", "move HP", lambda t: setattr(t.channel("C").hp, "freq_hz", 700))
+    assert engine.proposal_conflicts(engine.proposals[pid])
+
+
+def test_eq_or_crossover_change_after_levels_conflicts(engine):
+    engine.attest_measurement(engine._mid, "owner")
+    for change in ("eq", "lp"):
+        pid = engine.propose_levels()["id"]
+        if change == "eq":
+            engine.edit("test", "eq", lambda t: (setattr(t.channel("C").eq[3], "enabled", True),
+                                                 setattr(t.channel("C").eq[3], "gain_db", -2)))
+        else:
+            engine.edit("test", "lp", lambda t: setattr(t.channel("C").lp, "freq_hz", 2500))
+        assert engine.proposal_conflicts(engine.proposals[pid]), change
+
+
+def test_driver_reassignment_after_alignment_conflicts(engine):
+    pid = engine.propose_alignment({"C": 120, "A": 150})["id"]
+    c = engine.design.components[0]
+    engine.design.components[0] = c.model_copy(update={"channels": ["D"]})
+    engine.save_design()
+    assert engine.proposal_conflicts(engine.proposals[pid])
+
+
+def test_unrelated_presentation_edit_still_merges_with_levels(engine):
+    engine.attest_measurement(engine._mid, "owner")
+    pid = engine.propose_levels()["id"]
+    engine.edit("test", "rename", lambda t: setattr(t.channel("C"), "name", "Mid Left"))
+    engine.edit("test", "other channel", lambda t: setattr(t.channel("A"), "gain_db", -2))
+    assert engine.proposal_conflicts(engine.proposals[pid]) == []
+
+
+# ---- solver target provenance -----------------------------------------------------------
+
+def _loud_unknown(engine, channel="A", level=120.0):
+    m = Measurement(name="old loud", channels=[channel], freqs=GRID.tolist(), spl=[level] * len(GRID),
+                    tune=engine.tune.model_copy(deep=True))
+    engine.measurements.save(m)
+    return m
+
+
+def test_untrusted_measurements_cannot_move_solver_targets(engine):
+    engine.attest_measurement(engine._mid, "owner")
+    engine.edit("test", "offset", lambda t: setattr(t.channel("C"), "gain_db", -4))  # give levels work to do
+    pid = engine.propose_levels()["id"]
+    first = engine.proposals[pid]
+    _loud_unknown(engine)  # unknown provenance, 40 dB hotter
+    assert engine.proposal_conflicts(first) == []
+    again = engine.proposals[engine.propose_levels()["id"]]
+    assert again.context.target == first.context.target
+    assert [(e.channel, e.value) for e in again.edits] == [(e.channel, e.value) for e in first.edits]
+
+
+def test_meaningful_contributor_change_conflicts(engine):
+    engine.attest_measurement(engine._mid, "owner")
+    pid = engine.propose_levels()["id"]
+    # a newer trusted measurement of the same contributor changes the level anchor
+    m = engine.measurements.get(engine._mid)
+    newer = m.model_copy(update={"id": "newer", "spl": [v + 6 for v in m.spl], "taken_at": m.taken_at + 60})
+    engine.measurements.save(newer)
+    assert engine.proposal_conflicts(engine.proposals[pid])
+
+
+def test_levels_refused_without_trusted_anchor(engine):
+    p = engine.propose_levels()  # only an unknown-provenance measurement exists
+    assert p["edits"] == [] and any("trusted" in n for n in p["notes"])

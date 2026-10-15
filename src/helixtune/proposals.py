@@ -35,9 +35,12 @@ class ProposalContext(BaseModel):
     """Assumptions a proposal was computed from. Empty fields are not part of the binding."""
 
     seat: str | None = None
-    target: str | None = None                                   # fingerprint of the target curve used
-    measurements: dict[str, str] = Field(default_factory=dict)  # measurement id -> content fingerprint
+    target_mode: str | None = None                              # "shape" | "level" (how the solver target was built)
+    target: str | None = None                                   # fingerprint of the exact target array the solver used
+    anchor: dict[str, str] = Field(default_factory=dict)        # level-anchor measurement id -> content fingerprint
+    measurements: dict[str, str] = Field(default_factory=dict)  # fitted measurement id -> content fingerprint
     drivers: dict[str, str] = Field(default_factory=dict)       # channel -> driver-identity fingerprint
+    inputs: dict[str, str] = Field(default_factory=dict)        # channel -> fingerprint of solver-consumed settings
 
 
 class Proposal(BaseModel):

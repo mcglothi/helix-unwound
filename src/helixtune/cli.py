@@ -91,6 +91,23 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_demo(args) -> int:
+    from pathlib import Path
+    import uvicorn
+    from .api import create_app
+    from .demo import create_demo_engine
+    from .engine import EngineError
+    try:
+        engine = create_demo_engine(Path(args.data))
+    except (EngineError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    print("DEMO: invented hardware and measurements; physical device connections are disabled.")
+    import shlex
+    print(f"Owner UI: helixtune open --data {shlex.quote(str(engine.data_dir))} --port {args.port}")
+    uvicorn.run(create_app(engine), host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 def cmd_open(args) -> int:
     from pathlib import Path
     from urllib.parse import urlencode
@@ -129,6 +146,11 @@ def main(argv=None) -> int:
     s.add_argument("--data", default="~/.helixtune")
     s.add_argument("--at01")
     s.set_defaults(fn=cmd_serve)
+    d = sub.add_parser("demo", help="hardware-free workstation with synthetic example data")
+    d.add_argument("--host", default="127.0.0.1")
+    d.add_argument("--port", type=int, default=8770)
+    d.add_argument("--data", default="~/.helixtune-demo")
+    d.set_defaults(fn=cmd_demo)
     o = sub.add_parser("open", help="open the local owner UI without printing credentials")
     o.add_argument("--data", default="~/.helixtune")
     o.add_argument("--port", type=int, default=8765)

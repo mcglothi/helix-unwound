@@ -712,6 +712,8 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.get("/api/ports")
     def ports():
+        if engine.demo:
+            return []
         from serial.tools import list_ports
 
         return [{"device": p.device, "vid": p.vid, "pid": p.pid, "description": p.description}
@@ -719,6 +721,8 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.post("/api/device/connect")
     def connect(c: Connect):
+        if engine.demo and c.port != "emulator":
+            raise EngineError("Demo mode cannot open physical ports; select emulator")
         engine.detach()
         if c.port == "emulator":
             client = Client(EmulatedDevice(), allow_writes=c.allow_writes)

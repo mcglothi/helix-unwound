@@ -44,7 +44,7 @@
 </script>
 
 <header>
-  <div class="brand">Helix<span>Tune</span></div>
+  <div class="brand">Helix <span>Unwound</span></div>
   <nav class="modes" aria-label="Mode">
     {#each MODES as { m, l }}
       <button class:active={app.mode === m} aria-pressed={app.mode === m} onclick={() => setMode(m)}>{l}</button>
@@ -80,10 +80,14 @@
 {#if dev?.last_error}
   <div class="device-error" role="alert">{dev.last_error} Edits are staged offline until then.</div>
 {/if}
+{#if app.status?.demo}
+  <div class="demo-banner" role="status"><strong>Demo workstation</strong> · Synthetic hardware and generated captures. Physical device connections are disabled.</div>
+{/if}
 <Settings bind:open={settingsOpen} />
 
 <style>
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  .demo-banner { padding: 8px 16px; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--accent); font-size: 13px; line-height: 1.5; }
   .device-error { padding: 12px 16px; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--warn); }
   .brand { font-weight: 600; font-size: 17px; letter-spacing: .02em; }
   .brand span { color: var(--accent-text); }

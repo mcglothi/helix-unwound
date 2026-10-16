@@ -28,6 +28,7 @@ export interface OutputProtection {
 export interface ProposalInfo { id: string; title: string; kind: string; changes: number; source: string }
 export interface ABState { A: string | null; B: string | null; active: 'A' | 'B' | null }
 export interface Status {
+  demo: boolean
   device: Device; tune_name: string; revision: number; undo_depth: number
   pending_writes: number | null; recent_events: EngineEvent[]
   ab: ABState; proposals: ProposalInfo[]

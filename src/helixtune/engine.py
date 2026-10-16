@@ -88,6 +88,8 @@ class Engine:
 
     def __post_init__(self):
         self._lock = threading.RLock()
+        if not self.demo and (self.data_dir / '.helix-unwound-demo.json').exists():
+            raise EngineError('Demo state cannot be opened by a hardware engine; use the demo command or a different directory')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "snapshots").mkdir(exist_ok=True)
         cur = self.data_dir / "current.json"
@@ -130,8 +132,16 @@ class Engine:
 
     # ---- device -------------------------------------------------------------------
 
+    @property
+    def demo(self) -> bool:
+        return bool(getattr(self.mapping, 'synthetic', False))
+
     def attach(self, client: Client, kind: str, port: str | None = None) -> DeviceState:
         with self._lock:
+            if self.demo:
+                from .emulator import EmulatedDevice
+                if kind != 'emulator' or not isinstance(client.t, EmulatedDevice):
+                    raise EngineError('Demo mode only connects to its in-memory emulator')
             info = client.identify()
             if info.model_type != commands.PRO_MK2:
                 raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
@@ -800,6 +810,7 @@ class Engine:
 
     def status(self) -> dict:
         return {
+            "demo": self.demo,
             "device": self.device.__dict__,
             "tune_name": self.tune.name,
             "revision": self.revision,

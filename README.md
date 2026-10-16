@@ -26,6 +26,13 @@ Estimates use current, non-overlapping captures with a known baseline; power sum
 are explicitly phase-blind, not verified acoustic crossover alignment. See
 [`docs/PREDICTION.md`](docs/PREDICTION.md).
 
+## Try without hardware
+
+Build the frontend as shown below, then run `uv run helixtune demo`. In a second
+terminal, run `uv run helixtune open --data ~/.helixtune-demo --port 8770`.
+This uses separate demo state, invented addresses and synthetic measurements;
+physical device connections are disabled. See [`docs/DEMO.md`](docs/DEMO.md).
+
 ## Run
 
 ```bash

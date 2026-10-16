@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-15
-Status: ✅ Milestone 10 recoverable sessions, durable Undo/Redo and Setup guidance complete
+Status: ✅ Milestone 11 output setup, routing migration fix and keyboard/mobile navigation complete
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -236,6 +236,20 @@ Validation:
 
 Validation: **272 Python tests passed** locally; **247 passed / 25 skipped** from a clean staged Git archive without private inputs or built UI. **37 frontend tests**, Svelte/TS **0 errors/warnings**, production build passed. New synthetic persistence regressions cover restart, backup/malformed/future files, legacy adoption, save failure/retry, redo protections and device failure.
 
+## Milestone 11: output setup and keyboard/mobile navigation
+
+✅ COMPLETE (Codex; independent Claude review pending)
+
+- Setup's physical A–J output map shows routes, roles, tune mute state, recorded drivers, filters, independent output limits and pending reviews. Per-output name/role/route drafts have an exact before/after review and explicit workstation/live final action. Custom mixes remain intact unless deliberately replaced. See `docs/OUTPUT-SETUP.md`.
+- Owner-only setup PUT binds to output settings, equipment, policy/protection and device/boot context under the engine lock. Stale reviews refuse with 409, unrelated outputs remain mergeable, and validation/protections/Undo/recovery reuse existing engine paths. Invalid model errors now serialize without non-JSON exception context.
+- **Routing correction:** the original all-empty-mix legacy heuristic could silently restore L/R routes after switching the last active input Off. Legacy defaults now apply only when every serialized channel omits `mix`, keyed by physical ID. Explicit all-Off routes survive validation/save/restart/Undo. No physical hardware accessed.
+- Cmd/Ctrl Undo/Redo, bracket output navigation, discoverable Keys help, typing/modal/composition guards, skip link, Studio selector above the graph and focusable jump to controls. Main landmarks are no longer nested in Setup/Measurements.
+- Narrow-screen header is compact and nonsticky; corrected the measurement-count hiding rule. Output cards/dialogs adapt without relying on branding assets. Review/back navigation explicitly restores useful keyboard focus.
+- Native Brave isolated demo8782 verified name edit → exact review → save → keyboard Undo/Redo. Responsive **390px viewport emulation** verified Jump to controls focus/visibility and output editor/review/cancel. DevTools closed afterward; physical phone/touch, screen-reader and foldable acceptance remain open. Old real-data server untouched.
+- Tim is coordinating repo graphics/logo ideas externally with Gemini; no branding assets modified in this milestone.
+
+Validation: **287 Python tests passed** locally; **262 passed / 25 skipped** from a clean staged Git archive without private inputs or built UI. **43 frontend tests**, Svelte/TS **0 errors/warnings**, production build passed. Fifteen new synthetic API/model cases and six frontend helper cases cover stale edits, permissions, safety, live-write failure, custom routing, all-Off persistence and keyboard guards.
+
 ## Next tasks
 
 1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
@@ -244,8 +258,8 @@ Validation: **272 Python tests passed** locally; **247 passed / 25 skipped** fro
 4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
 5. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 
-Work while hardware captures are pending: next responsive/keyboard acceptance and deeper first-run
-output mapping/measurement guidance. Continue community UI/UX research and test live REW
+Work while hardware captures are pending: next measurement capture planning/verification
+guidance, then broader physical-phone/keyboard/accessibility acceptance. Continue community UI/UX research and test live REW
 compatibility when available; the new adapter currently has fixture acceptance. Argon's longer-term
 adaptive/embedded roadmap was reviewed; no USB/HID rewrite, native sweep engine,
 CAN adaptation or autonomous hardware writes were adopted from it.

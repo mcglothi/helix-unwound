@@ -4,6 +4,7 @@
   import { theme } from '../theme.svelte'
   import Settings from './Settings.svelte'
   import DevicePanel from './DevicePanel.svelte'
+  import KeyboardShortcuts from './KeyboardShortcuts.svelte'
   import { connectionStatus } from '../device'
 
   let settingsOpen = $state(false)
@@ -52,7 +53,8 @@
   <span class="tune mono" title="Current tune">{app.tune?.name ?? '…'}</span>
   <span class="spacer"></span>
   <button class="pill mono" class:live aria-label="Connection and recovery" onclick={() => deviceOpen = true}>{devText}</button>
-  <span class="pill mono">{app.system?.measurement_count ?? 0} measurements</span>
+  <span class="pill mono measurement-count">{app.system?.measurement_count ?? 0} measurements</span>
+  <div class="tools" role="group" aria-label="Session tools">
   <select aria-label="Scenes and snapshots" onchange={snapshot}>
     <option value="">Scenes…</option>
     {#each app.snapshots as s}<option value={s}>{s}</option>{/each}
@@ -77,7 +79,9 @@
   <button aria-label="Redo" title="Redo" onclick={() => app.redo()} disabled={!app.status?.redo_depth}>
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/></svg>
   </button>
+  <KeyboardShortcuts />
   <button onclick={signOut}>Sign out</button>
+  </div>
 </header>
 {#if app.status?.save_error}
   <div class="device-error" role="alert">{app.status.save_error} <button disabled={app.busy} onclick={() => app.retrySave()}>Retry saving</button></div>
@@ -98,6 +102,7 @@
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
   .demo-banner { padding: 8px 16px; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--accent); font-size: 13px; line-height: 1.5; }
   .device-error { padding: 12px 16px; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--warn); }
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .brand { font-weight: 600; font-size: 17px; letter-spacing: .02em; }
   .brand span { color: var(--accent-text); }
   .modes { display: flex; max-width: 100%; overflow-x: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
@@ -112,5 +117,13 @@
   .ab { display: inline-flex; gap: 2px; padding: 3px; font-weight: 600; }
   .ab span { padding: 4px 10px; border-radius: 4px; color: var(--muted); }
   .ab span.on { background: var(--accent); color: var(--accent-ink); }
-  @media (max-width: 700px) { .tune, .pill:nth-of-type(2) { display: none; } }
+  @media (max-width: 700px) {
+    header { position: static; gap: 8px; padding: 10px; }
+    .brand { font-size: 15px; margin-right: auto; }
+    .tune, .measurement-count, .spacer { display: none; }
+    .modes { order: 2; width: 100%; box-sizing: border-box; }
+    .tools { order: 3; width: 100%; gap: 6px; }
+    .tools select { flex: 1; min-width: 80px; max-width: 120px; }
+    .pill { padding-inline: 8px; }
+  }
 </style>

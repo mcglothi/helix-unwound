@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .dsp.filters import EqType
 from .emulator import EmulatedDevice
-from .engine import Engine, EngineError, MeasurementConflict, SafetyRejected, SnapshotExists
+from .engine import Engine, EngineError, MeasurementConflict, OutputSetupConflict, SafetyRejected, SnapshotExists
 from .mapping import MappingError
 from .model import EQ_BANDS, Crossover, Role, Tune
 from .protocol.client import Client
@@ -39,6 +39,13 @@ class ChannelPatch(BaseModel):
     mute: bool | None = None
     invert: bool | None = None
     delay_ms: float | None = None
+
+
+class OutputSetup(BaseModel):
+    name: str = Field(max_length=120)
+    role: Role
+    mix: dict[str, float]
+    expected_context: str = Field(min_length=16, max_length=16)
 
 
 class BandPatch(BaseModel):
@@ -303,7 +310,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.exception_handler(ValidationError)
     async def _validation(_, e: ValidationError):
-        return JSONResponse({"error": "invalid", "detail": e.errors(include_url=False)}, status_code=422)
+        return JSONResponse({"error": "invalid", "detail": e.errors(include_url=False, include_context=False, include_input=False)}, status_code=422)
 
     @app.exception_handler(EngineError)
     async def _engine(_, e: EngineError):
@@ -326,6 +333,17 @@ def create_app(engine: Engine) -> FastAPI:
     @app.get("/api/channels/{cid}")
     def get_channel(cid: str):
         return engine.tune.channel(cid)
+
+    @app.get("/api/outputs/{cid}/setup")
+    def output_setup_review(cid: str):
+        return engine.output_setup_review(cid)
+
+    @app.put("/api/outputs/{cid}/setup")
+    def save_output_setup(cid: str, p: OutputSetup, request: Request):
+        try:
+            return engine.save_output_setup(cid, source=_src(request), **p.model_dump())
+        except OutputSetupConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/response")
     def response(channels: str | None = None, points: int = 200):

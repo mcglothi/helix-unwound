@@ -115,14 +115,19 @@ class Tune(BaseModel):
             raise ValueError(f"exactly one channel for each physical output {CHANNELS} is required")
         return [by_id[cid] for cid in CHANNELS]
 
-    @model_validator(mode="after")
-    def _default_routing(self):
-        # tunes saved before routing existed have no mix at all; give them standard L/R
-        # alternation instead of silence (an all-empty mix is never intentional)
-        if all(not ch.mix for ch in self.channels):
-            for i, ch in enumerate(self.channels):
-                ch.mix = {INPUTS[i % 2]: 1.0}
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _default_routing(cls, value):
+        # Only pre-routing serialized tunes omit every mix field. An explicitly
+        # empty mix means Off, even when all ten outputs are intentionally off.
+        if isinstance(value, dict):
+            channels = value.get("channels")
+            if channels and all(isinstance(ch, dict) and "mix" not in ch for ch in channels):
+                routes = {cid: {INPUTS[i % 2]: 1.0} for i, cid in enumerate(CHANNELS)}
+                value = {**value, "channels": [
+                    {**ch, "mix": dict(routes.get(str(ch.get("id", "")).upper(), {}))} for ch in channels
+                ]}
+        return value
 
     def channel(self, cid: str) -> Channel:
         cid = cid.upper()

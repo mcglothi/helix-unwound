@@ -6,6 +6,7 @@
   import Graph from './Graph.svelte'
   import ProposalCard from './ProposalCard.svelte'
   import DevicePanel from './DevicePanel.svelte'
+  import OutputMap from './OutputMap.svelte'
   import { connectionStatus } from '../device'
 
   const STEPS = [
@@ -66,7 +67,7 @@
     {/each}
   </nav>
 
-  <main>
+  <section class="guide-content">
     <div class="kicker">GUIDE · {step + 1} OF {STEPS.length}</div>
     <h1>{STEPS[step].t}</h1>
 
@@ -80,16 +81,7 @@
           <div><b>3 · Gather your evidence</b><p>{app.system?.measurement_count ?? 0} of {app.system?.available_measurement_count ?? 0} captures eligible in this seat. Check outputs, hardware and capture-time tune in Measurements.</p><button onclick={() => { app.mode = 'measurements'; document.documentElement.dataset.mode = 'measurements' }}>Open Measurements</button></div>
         </div>
       </section>
-      <p class="muted">Confirm what each output drives. Roles set the safety rules — tweeters and mids need a high-pass, subs a subsonic filter. Change roles in Studio's inspector.</p>
-      <div class="sys">
-        {#each chans as c}
-          <div class="panel row" class:unused={c.role === 'unused'}>
-            <span class="sw" style="background:{ROLE_COLORS[c.role]}"></span>
-            <b class="mono">{c.id}</b><span>{c.name || '—'}</span><span class="muted">{ROLE_LABEL[c.role]}</span>
-            <span class="mono muted">{c.hp ? `HP ${fmtHz(c.hp.freq_hz)}` : ''} {c.lp ? `LP ${fmtHz(c.lp.freq_hz)}` : ''}</span>
-          </div>
-        {/each}
-      </div>
+      <OutputMap />
       <p class="muted">Record the actual head unit, amplifiers and speakers (with their specs) in
         <button class="link" onclick={() => { app.mode = 'system'; document.documentElement.dataset.mode = 'system' }}>System</button>
         — a recorded driver Fs tightens that channel's minimum high-pass.</p>
@@ -147,7 +139,7 @@
       <button class="primary" disabled={step === STEPS.length - 1} onclick={() => step++}>Next</button>
     </div>
     <p class="guide-note muted">This guide is freely navigable. Visiting a step does not mark it complete; remeasure and listen to verify changes.</p>
-  </main>
+  </section>
 
   <aside class="side">
     <ProposalCard />
@@ -170,8 +162,8 @@
   .wizard { display: grid; grid-template-columns: 250px minmax(0, 1fr) 360px; gap: 16px; padding: 16px; }
   @media (max-width: 1100px) { .wizard { grid-template-columns: minmax(0, 1fr); } .steps { flex-direction: row !important; overflow-x: auto; } }
   @media (horizontal-viewport-segments: 2) { .wizard { grid-template-columns: env(viewport-segment-width 0 0) env(viewport-segment-width 1 0); } .steps { grid-column: 1 / -1; flex-direction: row !important; } }
-  main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-  main p { margin: 0; max-width: 70ch; line-height: 1.5; }
+  .guide-content { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .guide-content p { margin: 0; max-width: 70ch; line-height: 1.5; }
   .steps { display: flex; flex-direction: column; gap: 4px; }
   .step { all: unset; cursor: pointer; display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 10px; color: var(--muted); }
   .step:focus-visible { outline: 2px solid var(--accent); }
@@ -183,10 +175,7 @@
   .kicker { color: var(--accent-text); font-size: 13px; font-weight: 600; letter-spacing: .06em; }
   h1 { margin: 0; font-size: 26px; }
   .sys { display: flex; flex-direction: column; gap: 6px; }
-  .row { display: grid; grid-template-columns: 14px 24px 1.4fr 1fr 1.3fr; gap: 10px; align-items: center; padding: 10px 12px; }
-  .row.unused { opacity: .5; }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
-  .row .sw { margin: 0; }
   .unit { display: flex; gap: 6px; }
   .dist { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
   .dist label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }

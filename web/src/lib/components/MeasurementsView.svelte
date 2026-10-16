@@ -100,7 +100,7 @@
   }
 </script>
 
-<main class="library">
+<div class="library">
   <section class="panel listing">
     <div class="head"><div><h1>Measurements</h1><p class="muted">What was captured, and with which hardware.</p></div>
       <button disabled={busy} onclick={() => refresh()}>Refresh</button></div>
@@ -188,7 +188,7 @@
       </details>
     {/if}
   </section>
-</main>
+</div>
 
 <style>
   .library { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: var(--gap); padding: var(--gap); max-width: 1500px; margin: auto; }

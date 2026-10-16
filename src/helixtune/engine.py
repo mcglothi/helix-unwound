@@ -31,6 +31,10 @@ class EngineError(RuntimeError):
     pass
 
 
+class OutputSetupConflict(EngineError):
+    pass
+
+
 class SnapshotExists(EngineError):
     def __init__(self, name: str):
         super().__init__(f"a scene named {name!r} already exists; choose another name (the owner may overwrite)")
@@ -283,6 +287,28 @@ class Engine:
             self._autosave()
             self._log(source, summary, writes)
             return {"ok": True, "writes": writes, "live": writes > 0}
+
+    def output_setup_review(self, cid: str) -> dict:
+        """Bind an output-assignment edit to current settings, equipment and send state."""
+        with self._lock:
+            channel = self.tune.channel(cid)
+            context = fingerprint({
+                "channel": channel, "design": self.design, "policy": self.policy,
+                "protections": self.protections, "device": self.device.__dict__,
+                "connection": self._connection_epoch, "boot": self._connection_nonce,
+            })
+            return {"channel": channel.model_dump(mode="json"), "context": context,
+                    "live": bool(self.client and self.device.writes_enabled and self.device.baselined)}
+
+    def save_output_setup(self, cid: str, *, name: str, role: Role, mix: dict[str, float],
+                          expected_context: str, source: str) -> dict:
+        with self._lock:
+            if self.output_setup_review(cid)["context"] != expected_context:
+                raise OutputSetupConflict("Output, equipment, protection rules or connection changed. Reopen the output editor and review the current settings.")
+            def update(t):
+                channel = t.channel(cid)
+                channel.name, channel.role, channel.mix = name, role, mix
+            return self.edit(source, f"{cid.upper()}: updated output name, role and input route", update)
 
     def edit(self, source: str, summary: str, fn) -> dict:
         """Copy the tune, let fn mutate the copy, then apply it."""

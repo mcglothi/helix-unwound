@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-15
-Status: ✅ Milestone 7 prediction integrity complete; public repository available for review
+Status: ✅ Milestone 8 hardware-free demo and CI complete; hardware capture still pending
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -187,13 +187,38 @@ Validation:
 - **34 frontend tests passed**; Svelte/TS **0 errors, 0 warnings**; production build passed. Diff whitespace check clean.
 - Hardware/user state/existing :8765 server untouched. Public repository and pushes were explicitly authorized by Tim, including the **Helix Unwound** name. Initial main includes session/protection work and branding brief; milestone 7 is pushed on the collaboration branch for review.
 
+## Milestone 8: hardware-free demo and portable CI
+
+✅ COMPLETE (Codex; first hosted CI run green)
+
+- `helixtune demo` runs on loopback port 8770 with separate `~/.helixtune-demo` state, invented parameter addresses, a valid virtual three-way/subwoofer tune, a baseline scene and eight explicitly synthetic captures. No vendor map or private inputs are required. Same auth, proposals, protections and history paths as the normal workstation.
+- Existing non-demo directories are refused unchanged. Incomplete/future demo initialization fails closed; restarting an existing demo preserves edits/deletions instead of reseeding. A normal hardware engine refuses demo state. Demo inventory has fictional identities and no personal microphone serials.
+- API refuses physical connections before opening ports or detaching a working emulator; demo port listing does not enumerate hardware. Engine also requires an actual in-memory emulator transport instead of trusting a caller's kind label. Owner/agent capabilities remain enforced.
+- Visible demo banner and Helix Unwound wordmark/sign-in/tab/manifest names. See `docs/DEMO.md` and README for launch commands.
+- GitHub CI: Python 3.11/3.13 on Linux/macOS; frontend checks/tests/build; wheel checks and an isolated installed-wheel demo/API smoke. Actions pinned to verified release SHAs, read-only repository permission, locked dependencies. Main pushes and PRs trigger checks; no release publishing.
+- Packaging fix: Hatch previously omitted Git-ignored built frontend files. Wheel artifacts now explicitly include the Svelte build when present, while source installation/build without generated UI continues working. Built UI, vendor files, user data and credentials remain excluded from Git.
+
+Validation:
+- **227 Python tests passed** locally; **202 passed / 25 skipped** from a clean Git archive without private inputs/generated UI. Ten new synthetic demo cases cover isolation, durable edits, guards, CLI startup and authentication.
+- **34 frontend tests**, Svelte/TS **0 errors/0 warnings**, production build. Wheel built with and without UI; built wheel's isolated demo/API smoke passed.
+- First hosted run **38831378358 passed all five jobs**, including both Python versions on both OSes and frontend/packaging. Follow-up installed-wheel smoke was added after this run and passed locally; check the latest PR checks for hosted status.
+- Native Brave desktop review on temporary port 8779 verified rendered Studio/banner, Auto-EQ preview, Apply (two bands), and Undo (zero bands). Additional browser actions stopped when the user changed browser state. This is limited desktop acceptance; phone/tablet, session sign-out/expiry and protection-review rendered coverage remain pending.
+- Temporary demo process on :8779 uses `/tmp/helix-unwound-demo-review-20261015`; it is independent of the old :8765 server and `~/.helixtune`. No physical hardware, user state migration or firmware access. Public branch pushed under Tim's authorization.
+
 ## Next tasks
 
 1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 2. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
-3. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Add a portable GitHub CI workflow and settle a license before inviting community contributions; neither has been set up yet.
+3. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Portable CI is now implemented (milestone 8); settle a license before inviting community code contributions.
 4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
-5. Rendered browser/phone acceptance of sign-in, sign-out, and physical-output configuration; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
+5. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
+
+Work while hardware captures are pending: next implement **read-only REW integration**
+(connect/discover capabilities, import measurement data with provenance, no automated
+sweeps or channel switching), then saved-state transaction/recovery improvements,
+responsive/keyboard acceptance and a guided first-run flow. Argon's longer-term
+adaptive/embedded roadmap was reviewed; no USB/HID rewrite, native sweep engine,
+CAN adaptation or autonomous hardware writes were adopted from it.
 
 These are review recommendations, not approval for every proposed product feature. See `docs/DESIGN.md` for prior choices and compare against implementation; design docs contain aspirational/unverified claims.
 

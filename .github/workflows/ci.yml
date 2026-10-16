@@ -2,6 +2,7 @@ name: Portable checks
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -71,4 +72,25 @@ jobs:
               assert 'helixtune/demo.py' in names
               assert 'helixtune/web/dist/index.html' in names
               assert any(name.startswith('helixtune/web/dist/assets/') and name.endswith('.js') for name in names)
+          PY
+      - name: Launch demo API from the installed wheel
+        run: |
+          uv run --no-project --with ./dist/helixtune-0.0.1-py3-none-any.whl python - <<'PY'
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from fastapi.testclient import TestClient
+          from helixtune.api import create_app
+          from helixtune.demo import create_demo_engine
+          with TemporaryDirectory() as directory:
+              app = create_app(create_demo_engine(Path(directory)))
+              browser = TestClient(app)
+              shell = browser.get('/')
+              assert shell.status_code == 200 and 'Helix Unwound' in shell.text
+              assert '/assets/' in shell.text
+              assert browser.get('/api/status').status_code == 401
+              owner = TestClient(app, headers={'Authorization': 'Bearer ' + app.state.access.token('owner')})
+              assert owner.get('/api/status').json()['demo'] is True
+              assert owner.get('/api/system').json()['measurement_count'] == 8
+              assert owner.post('/api/device/connect', json={'port': '/dev/not-a-real-port'}).status_code == 400
+          print('Installed wheel demo API and frontend smoke passed')
           PY

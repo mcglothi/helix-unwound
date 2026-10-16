@@ -74,8 +74,17 @@
   <button aria-label="Undo" title="Undo" onclick={() => app.undo()} disabled={!app.status?.undo_depth}>
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/></svg>
   </button>
+  <button aria-label="Redo" title="Redo" onclick={() => app.redo()} disabled={!app.status?.redo_depth}>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/></svg>
+  </button>
   <button onclick={signOut}>Sign out</button>
 </header>
+{#if app.status?.save_error}
+  <div class="device-error" role="alert">{app.status.save_error} <button disabled={app.busy} onclick={() => app.retrySave()}>Retry saving</button></div>
+{/if}
+{#if app.status?.recovery_notice}
+  <div class="demo-banner" role="status">{app.status.recovery_notice} The device remains disconnected.</div>
+{/if}
 {#if dev?.last_error}
   <div class="device-error" role="alert">{dev.last_error} Edits are staged offline until then.</div>
 {/if}

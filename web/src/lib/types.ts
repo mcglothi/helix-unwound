@@ -30,7 +30,8 @@ export interface ABState { A: string | null; B: string | null; active: 'A' | 'B'
 export interface Status {
   demo: boolean
   connection_epoch: number
-  device: Device; tune_name: string; revision: number; undo_depth: number
+  device: Device; tune_name: string; revision: number; undo_depth: number; redo_depth?: number
+  save_error?: string | null; recovery_notice?: string | null
   pending_writes: number | null; recent_events: EngineEvent[]
   ab: ABState; proposals: ProposalInfo[]
 }

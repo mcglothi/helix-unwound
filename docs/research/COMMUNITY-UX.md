@@ -44,11 +44,11 @@ an initial source notebook, not a representative survey or a vendor ranking.
 | User problem / research question | Product requirement | Current evidence / remaining work |
 |---|---|---|
 | “Is it connected, and did it actually send my tune?” | Separate offline, read-only, ready-to-send, sending and recovery states. No silent overwrite on connect. | Connection panel + context-bound review; API and emulator regressions. Independent hardware readback still unverified. |
-| “It froze; did I lose my work?” | Maintain useful offline editing; preserve accepted tune on failed device writes; show recovery without claiming a hardware rollback. | Existing write-recovery tests and demo; crash-safe durable tune/history storage still pending. |
+| “It froze; did I lose my work?” | Maintain useful offline editing; preserve accepted tune on failed device writes; show recovery without claiming a hardware rollback. | Atomic tune/history/A-B checkpoint plus previous-checkpoint recovery and visible save failures; device-write regressions and isolated restart demo. Independent equipment/measurement transactions remain open. |
 | “What does this button change?” | Outcome-based labels, local scene vs device actions distinguished, extra protocol detail disclosed progressively. | New connection review uses a named tune and explicit send confirmation; broad labeling audit remains. |
 | “Why is the graph convincing when the measurement is unsuitable?” | Show sources, missing coverage and refusal reasons; do not label combined captures as individual drivers. | Evidence-aware estimate view already implemented. |
 | “I have to keep copying filters and measurements between applications.” | Browse/preview/copy REW captures without altering source data or silently assigning current hardware. | Read-only REW adapter with fixture tests; live REW acceptance pending. |
-| “Can I fix a mistake?” | Predictable Undo, explicit scene overwrite, retained review conflicts; no automatic dismissal on failure. | Existing regressions and limited rendered demo verification. Durable history after restart remains open. |
+| “Can I fix a mistake?” | Predictable Undo, explicit scene overwrite, retained review conflicts; no automatic dismissal on failure. | Durable Undo/Redo with protection rechecks, scene/A-B final-state checkpoints and rendered edit/Undo/Redo/restart verification. |
 | “Desktop software on my phone is unusable.” | Responsive layouts, readable status, large targets, keyboard/focus support, no hidden primary action. | Dialog viewport bounds/progressive disclosure; phone and full accessibility testing remain pending. |
 
 ## Research continuation

@@ -19,6 +19,7 @@ import numpy as np
 
 from . import afpx, autotune, equipment, mapping, measurements, safety, targets
 from . import protection_provenance as provenance
+from . import workstation
 from .proposals import Proposal, ProposalConflict, ProposalContext, fingerprint
 from .devicefile import ParamMap
 from .model import Tune, Role
@@ -95,8 +96,18 @@ class Engine:
             raise EngineError('Demo state cannot be opened by a hardware engine; use the demo command or a different directory')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "snapshots").mkdir(exist_ok=True)
+        self.save_error = None
+        try:
+            saved, self.recovery_notice = workstation.load(self.data_dir)
+        except workstation.RecoveryError as exc:
+            raise EngineError(str(exc)) from exc
         cur = self.data_dir / "current.json"
-        if cur.exists():
+        if saved:
+            self.tune = saved.tune
+            self.history = saved.history
+            self.redo_stack = saved.redo
+            self.ab = {"A": saved.ab.A, "B": saved.ab.B, "active": saved.ab.active}
+        elif cur.exists():
             self.tune = Tune.model_validate_json(cur.read_text())
         self.measurements = measurements.Store(self.data_dir)
         tf = self.data_dir / "targets.json"
@@ -290,12 +301,17 @@ class Engine:
             problems = self._check(prev)
             if problems:
                 raise SafetyRejected(problems)
-            res = self._adopt(prev, source, "undo")
-            self.history.pop()
-            self.redo_stack.append(cur)
-            return res
+            return self._adopt(prev, source, "undo",
+                               history=self.history[:-1], redo=(self.redo_stack + [cur])[-200:])
 
-    def _adopt(self, t: Tune, source: str, summary: str) -> dict:
+    def redo(self, source: str = "user") -> dict:
+        with self._lock:
+            if not self.redo_stack:
+                raise EngineError("nothing to redo")
+            return self._adopt(self.redo_stack[-1], source, "redo",
+                               history=(self.history + [self.tune])[-200:], redo=self.redo_stack[:-1])
+
+    def _adopt(self, t: Tune, source: str, summary: str, *, history=None, redo=None, ab=None) -> dict:
         t = Tune.model_validate(t.model_dump())
         problems = self._check(t)
         if problems:
@@ -307,6 +323,10 @@ class Engine:
             writes = self._write_image(img)
         else:
             self.pending_writes = len(mapping.diff(self.applied_image, img))
+        self.history = (self.history + [self.tune])[-200:] if history is None else history
+        self.redo_stack = [] if redo is None else redo
+        if ab is not None:
+            self.ab = ab
         self.tune = t
         self._autosave()
         self._log(source, summary, writes)
@@ -353,10 +373,7 @@ class Engine:
             problems = self._check(t)
             if problems:
                 raise SafetyRejected(problems)
-            previous = self.tune
-            result = self._adopt(t, source, f"loaded snapshot {name}")
-            self.history.append(previous)
-            return result
+            return self._adopt(t, source, f"loaded snapshot {name}")
 
     def snapshot_tune(self, name: str) -> Tune:
         path = self.data_dir / "snapshots" / f"{name}.json"
@@ -789,12 +806,13 @@ class Engine:
         slot = slot.upper()
         if slot not in ("A", "B"):
             raise EngineError("slot must be A or B")
-        t = self.snapshot_tune(snapshot) if snapshot else self.tune.model_copy(deep=True)
-        self.ab[slot] = t
-        if self.ab["active"] is None:
-            self.ab["active"] = slot if snapshot is None else None
-        self.revision += 1
-        return self.ab_state()
+        with self._lock:
+            t = self.snapshot_tune(snapshot) if snapshot else self.tune.model_copy(deep=True)
+            self.ab[slot] = t
+            if self.ab["active"] is None:
+                self.ab["active"] = slot if snapshot is None else None
+            self._autosave()
+            return self.ab_state()
 
     def ab_toggle(self, source: str) -> dict:
         with self._lock:
@@ -806,12 +824,11 @@ class Engine:
             problems = self._check(t)
             if problems:
                 raise SafetyRejected(problems)
-            previous = self.tune
-            self._adopt(t.model_copy(deep=True), source, f"A/B → {nxt} ({t.name})")
-            self.history.append(previous)
-            if self.ab["active"]:
-                self.ab[cur] = previous.model_copy(deep=True)  # retain edits only after a successful switch
-            self.ab["active"] = nxt
+            slots = dict(self.ab)
+            if slots["active"]:
+                slots[cur] = self.tune.model_copy(deep=True)
+            slots["active"] = nxt
+            self._adopt(t.model_copy(deep=True), source, f"A/B → {nxt} ({t.name})", ab=slots)
             return self.ab_state()
 
     def ab_state(self) -> dict:
@@ -843,6 +860,9 @@ class Engine:
             "proposals": [{"id": p.id, "title": p.title, "kind": p.kind, "changes": len(p.edits), "source": p.source}
                           for p in self.proposals.values()],
             "undo_depth": len(self.history),
+            "redo_depth": len(self.redo_stack),
+            "save_error": self.save_error,
+            "recovery_notice": self.recovery_notice,
             "pending_writes": None if self.device.baselined else self.pending_writes,
             "recent_events": [e.__dict__ for e in self.events[-20:]],
         }
@@ -925,10 +945,34 @@ class Engine:
 
     def _autosave(self):
         self.revision += 1
-        (self.data_dir / "current.json").write_text(self.tune.model_dump_json(indent=2))
+        self._save_workstation()
+
+    def _save_workstation(self):
+        try:
+            workstation.save(self.data_dir, workstation.Checkpoint(
+                tune=self.tune, history=self.history, redo=self.redo_stack, ab=workstation.Slots(**self.ab)))
+        except (OSError, workstation.RecoveryError):
+            # The accepted tune may already have reached the DSP. Do not report a
+            # rejected edit or roll back memory; make unsaved work explicit instead.
+            self.save_error = "Session changes are not saved. Keep the app open, check available disk space and permissions, then retry saving."
+            return
+        self.save_error = None
+        try:
+            workstation.atomic_write(self.data_dir / "current.json", self.tune.model_dump_json(indent=2))
+        except OSError:
+            self.save_error = "Session saved, but the current.json compatibility export failed. Retry saving after checking disk space and permissions."
+
+    def retry_save(self):
+        with self._lock:
+            self._save_workstation()
+            self._log("owner", "retried session save")
+            return {"ok": self.save_error is None}
 
     def _log(self, source: str, summary: str, writes: int = 0):
         self.events.append(Event(time.time(), source, summary, writes))
         self.events = self.events[-500:]
-        with open(self.data_dir / "events.jsonl", "a") as fh:
-            fh.write(json.dumps(self.events[-1].__dict__) + "\n")
+        try:
+            with open(self.data_dir / "events.jsonl", "a") as fh:
+                fh.write(json.dumps(self.events[-1].__dict__) + "\n")
+        except OSError:
+            self.save_error = self.save_error or "The activity log could not be saved. Check disk space and permissions, then retry saving the session."

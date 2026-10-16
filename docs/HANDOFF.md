@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-15
-Status: ✅ Milestone 9 connection/recovery UI, read-only REW and community UX research complete
+Status: ✅ Milestone 10 recoverable sessions, durable Undo/Redo and Setup guidance complete
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -222,6 +222,20 @@ Validation:
 - Native Brave review at temporary :8780: emulator read-only connect → disconnect → explicitly write-enabled connect → review → type confirmation → send → writes-active → disconnect. REW browser → preview → import used a generated HTTP fixture at :48735, with no physical REW/audio/DSP activity. Imported copy visibly kept unknown outputs/hardware/tune. Fixture service stopped after testing; no live REW compatibility claim.
 - Isolated temporary state `/tmp/helix-unwound-connections-review`; old :8765 user server/data untouched. Temporary demo :8779 from milestone 8 may also remain running. Public branch/PR1 updated; no main merge/release/firmware/hardware use.
 
+## Milestone 10: recoverable sessions and useful Setup guidance
+
+✅ COMPLETE (Codex; independent Claude review pending)
+
+- Versioned atomic `workstation.json` saves the accepted tune, bounded Undo/Redo history and A/B slots; the previous validated checkpoint provides recovery with a visible notice. Both unreadable refuses startup rather than substituting defaults; future versions refuse downgrade. Legacy `current.json` migrates only on the first save and becomes a compatibility export. See `docs/SESSION-RECOVERY.md` for scope and limitations.
+- Restart always remains disconnected without writes or a baseline. Output protections stay independently enforced. Failed device edits/Undo/Redo/scene/A-B operations preserve the prior checkpoint and accepted state.
+- Save failures after accepted device writes retain the new tune in memory with a persistent warning and owner retry action. Compatibility-export failures are distinguished. Event-log I/O failure no longer turns an accepted tune change into a misleading rejected request.
+- Redo added to engine, authenticated HTTP API, MCP and header. A new edit/scene/A-B switch discards redo. Scene/A-B history now enters the checkpoint as part of the final state rather than after saving.
+- Setup starts with scene/connection/measurement actions and live eligibility counts. Navigation no longer gives false completed-step checkmarks. Electrical cutoff comparisons no longer claim acoustic alignment. The sidebar explains review/remeasure instead of advertising future AI features.
+- Native Brave acceptance on isolated synthetic demo port **8781** verified edit → Undo → Redo, rendered Setup checklist and an actual process restart retaining the edited mute state and Undo depth. No real DSP, REW or `~/.helixtune` accessed; phone/tablet and full keyboard acceptance remain open.
+- Storage smoke timing: one 200-step checkpoint (default ten-output tunes) was ~4.54 MB / 0.116 s on this Mac after compact serialization. This is not a performance guarantee; large-history responsiveness and independently managed equipment/measurement transactions remain future work.
+
+Validation: **272 Python tests passed** locally; **247 passed / 25 skipped** from a clean staged Git archive without private inputs or built UI. **37 frontend tests**, Svelte/TS **0 errors/warnings**, production build passed. New synthetic persistence regressions cover restart, backup/malformed/future files, legacy adoption, save failure/retry, redo protections and device failure.
+
 ## Next tasks
 
 1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
@@ -230,9 +244,8 @@ Validation:
 4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
 5. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 
-Work while hardware captures are pending: next saved-state transaction/recovery
-improvements and durable tune history, then responsive/keyboard acceptance and a
-guided first-run flow. Continue community UI/UX research and test live REW
+Work while hardware captures are pending: next responsive/keyboard acceptance and deeper first-run
+output mapping/measurement guidance. Continue community UI/UX research and test live REW
 compatibility when available; the new adapter currently has fixture acceptance. Argon's longer-term
 adaptive/embedded roadmap was reviewed; no USB/HID rewrite, native sweep engine,
 CAN adaptation or autonomous hardware writes were adopted from it.
@@ -256,8 +269,8 @@ These are review recommendations, not approval for every proposed product featur
 - Aggregate filter headroom, safe power/excursion, and prediction-display issues remain open. Proposal conflict protection is implemented, but future solver dependencies must be added to its binding. These milestones do not establish speaker protection or public-release readiness.
 - API/MCP role credentials remain long-lived; browser sessions now expire and revoke independently. Per-agent identities and browser-session management are not implemented. HTTP is unencrypted; use trusted networking/encrypted tunnels for remote access. See `docs/ACCESS.md` for rotation and remaining pairing work.
 - Stricter protection floors are persisted before writes; they may remain after a failed tune update. Individual offline owner clearing of obsolete constraints is the only supported relaxation path.
-- Tune/system persistence still uses direct file writes (protection and measurement records use replacement); crash-safe storage and full history reconstruction remain future work.
-- UI was source-reviewed; Codex could not inspect a rendered browser session in this environment.
+- Tune/Undo/Redo/A-B use recoverable atomic checkpoints; system/design/target writes and cross-file transaction boundaries remain independent. Full activity-timeline reconstruction and multi-process data-directory locking remain future work.
+- Isolated native Brave demo acceptance covers selected desktop flows; full phone/tablet, keyboard and accessibility review remains pending.
 - Current event summaries cannot reconstruct a full tune timeline after restart.
 - Legacy preset crossover/mute/delay interpretation remains provisional.
 - Do not infer exact historical measurement-to-tune association from file dates alone.

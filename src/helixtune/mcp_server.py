@@ -144,6 +144,12 @@ def undo() -> str:
 
 
 @mcp.tool()
+def redo() -> str:
+    """Restore the last undone tune, rechecking current output protections."""
+    return _call("POST", "/api/redo")
+
+
+@mcp.tool()
 def list_snapshots() -> str:
     """Saved tunes."""
     return _call("GET", "/api/snapshots")

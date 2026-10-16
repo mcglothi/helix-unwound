@@ -155,6 +155,12 @@ class AppState {
   undo() {
     return this.run(api('POST', '/api/undo'))
   }
+  redo() {
+    return this.run(api('POST', '/api/redo'))
+  }
+  retrySave() {
+    return this.run(api('POST', '/api/session/save'))
+  }
   loadSnapshot(name: string) {
     return this.run(api('POST', `/api/snapshots/${encodeURIComponent(name)}/load`))
   }

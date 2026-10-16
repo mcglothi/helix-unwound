@@ -422,6 +422,15 @@ def create_app(engine: Engine) -> FastAPI:
     def undo(request: Request):
         return engine.undo(_src(request))
 
+    @app.post("/api/redo")
+    @agent_allowed
+    def redo(request: Request):
+        return engine.redo(_src(request))
+
+    @app.post("/api/session/save")
+    def retry_save():
+        return engine.retry_save()
+
     # ---- snapshots ------------------------------------------------------------------
 
     @app.get("/api/snapshots")

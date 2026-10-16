@@ -64,6 +64,7 @@ class Measurement(BaseModel):
     # physical drivers that were on each measured channel: channel -> [{id, make, model}].
     # None = unknown provenance (e.g. imported legacy files); never inferred from import time.
     drivers: dict[str, list[dict[str, str]]] | None = None
+    import_provenance: dict = Field(default_factory=dict)
     drivers_source: str = ""                # how `drivers` was established, e.g. "owner attested …"
     driver_history: list[DriverProvenanceEvent] = Field(default_factory=list)
 

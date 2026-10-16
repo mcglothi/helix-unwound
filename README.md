@@ -64,6 +64,12 @@ managed parameters again. This does not undo any writes that may already have
 reached the DSP. A software baseline records completed write transactions, not
 independent hardware readback verification; protocol/ACK semantics remain provisional.
 
+The header's connection-status button opens **Connection & recovery**. Read-only
+is the default; write connections require a named-tune review and explicit send
+confirmation. The demo lets you exercise this workflow against an in-memory device.
+In Measurements, **Bring measurements from REW** browses and copies captures through
+REW's local API without changing REW or starting audio. See [`docs/REW.md`](docs/REW.md).
+
 ## Hardware
 
 ```bash

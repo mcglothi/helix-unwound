@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
@@ -88,6 +89,8 @@ class Engine:
 
     def __post_init__(self):
         self._lock = threading.RLock()
+        self._connection_epoch = 0
+        self._connection_nonce = secrets.token_hex(16)
         if not self.demo and (self.data_dir / '.helix-unwound-demo.json').exists():
             raise EngineError('Demo state cannot be opened by a hardware engine; use the demo command or a different directory')
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -145,6 +148,7 @@ class Engine:
             info = client.identify()
             if info.model_type != commands.PRO_MK2:
                 raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
+            self._connection_epoch += 1
             self.client = client
             self.device = DeviceState(kind=kind, port=port, model=info.model_string,
                                       model_type=info.model_type, writes_enabled=client.allow_writes,
@@ -156,11 +160,29 @@ class Engine:
 
     def detach(self) -> None:
         with self._lock:
+            client = self.client
             self.client = None
+            self._connection_epoch += 1
             self.device = DeviceState()
             self.applied_image = None
+            if client is not None:
+                close = getattr(client.t, 'close', None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception as exc:
+                        raise EngineError('Device detached, but closing the transport failed') from exc
 
-    def push_full(self, confirm: str) -> int:
+    def overwrite_review(self) -> dict:
+        with self._lock:
+            return {'context': fingerprint({'tune': self.tune.model_dump(mode='json'),
+                                            'device': self.device.__dict__, 'connection_epoch': self._connection_epoch,
+                                            'boot': self._connection_nonce}),
+                    'revision': self.revision, 'connection_epoch': self._connection_epoch,
+                    'tune_name': self.tune.name, 'device': dict(self.device.__dict__),
+                    'problems': self._check(self.tune), 'parameter_count': len(self.mapping.render(self.tune))}
+
+    def push_full(self, confirm: str, expected_context: str | None = None) -> int:
         """Overwrite every managed parameter on the device with the current tune.
 
         Destroys whatever tune is on the device. Requires confirm == "OVERWRITE".
@@ -169,6 +191,8 @@ class Engine:
             if confirm != "OVERWRITE":
                 raise EngineError('full push overwrites the tune on the DSP; pass confirm="OVERWRITE"')
             self._require_writable()
+            if expected_context is not None and expected_context != self.overwrite_review()['context']:
+                raise EngineError('Tune or connection changed; review the overwrite again')
             tune = Tune.model_validate(self.tune.model_dump())
             problems = self._check(tune)
             if problems:
@@ -811,6 +835,7 @@ class Engine:
     def status(self) -> dict:
         return {
             "demo": self.demo,
+            "connection_epoch": self._connection_epoch,
             "device": self.device.__dict__,
             "tune_name": self.tune.name,
             "revision": self.revision,

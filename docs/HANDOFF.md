@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-15
-Status: ✅ Milestone 8 hardware-free demo and CI complete; hardware capture still pending
+Status: ✅ Milestone 9 connection/recovery UI, read-only REW and community UX research complete
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -17,7 +17,7 @@ Branch: `pi/helixtune-foundation`
 - Product name: **Helix Unwound**. Tim's brand concept: a double helix unwinding at the top and evaporating into music notes, expressing freedom. See `docs/BRAND.md`. Internal package/CLI still `helixtune`.
 
 - Target HELIX DSP PRO MK2; Mac-first workstation backed by a headless Python engine with HTTP/MCP and a Svelte client. Preserve Linux/truck-computer viability.
-- Studio Console visual direction, consistent themes, Drive/Setup/System views, phone/tablet/desktop support, foldables considered.
+- Studio Console visual direction, consistent themes, Drive/Setup/System views, phone/tablet/desktop support, foldables considered. Tim explicitly prioritizes polished modern UI/UX and research into community tuning methods AND complaints about DSP software; record concrete acceptance criteria, not only technical ideas.
 - REW alongside tuning, proposals and verification, legacy preset/measurement imports, equipment and wiring model.
 - Codex and Claude alternate on this branch with milestone checkpoints. Current priority: foundation reliability before more features.
 - All hardware semantics remain provisional; Windows capture session is still needed. No hardware accessed during Codex review/setup.
@@ -205,6 +205,23 @@ Validation:
 - Native Brave desktop review on temporary port 8779 verified rendered Studio/banner, Auto-EQ preview, Apply (two bands), and Undo (zero bands). Additional browser actions stopped when the user changed browser state. This is limited desktop acceptance; phone/tablet, session sign-out/expiry and protection-review rendered coverage remain pending.
 - Temporary demo process on :8779 uses `/tmp/helix-unwound-demo-review-20261015`; it is independent of the old :8765 server and `~/.helixtune`. No physical hardware, user state migration or firmware access. Public branch pushed under Tim's authorization.
 
+## Milestone 9: connection workflow, read-only REW and usability evidence
+
+✅ COMPLETE (Codex; independent review pending)
+
+- Header connection status opens a responsive Connection & recovery dialog with human-readable states, explicit port selection, read-only default, optional write permission, disconnection and reviewed full-send/recovery. Reconnecting resets write permission; connecting never auto-imports or overwrites a device tune. Technical send detail is progressively disclosed.
+- Review binds tune + connection generation + server boot nonce. UI sends that context with typed OVERWRITE confirmation. Backend rechecks under lock and refuses after tune change, reconnect or process replacement before any writes. Existing trusted API callers can still use the older explicit-confirm request without context. Actual hardware readback remains unverified.
+- Serial replacement is serialized and disconnection closes owned transports, including error cleanup. Concurrent fake-serial regression verifies superseded connections are closed. Demo transport guards remain intact.
+- Owner-only local REW discovery/preview/import (including GET capability boundary) issues only fixed loopback GET endpoints, with timeout/response limits, proxy/redirect refusal and documented big-endian float decoding. Handles log/linear axes (DC omitted), list/index-keyed collections, duplicate UUID refusal, source-change checks and local idempotent copy. No sweeps, audio capture, settings changes, subscriptions or writes to REW.
+- Measurement imports preserve source summary/date text/smoothing/content fingerprint/phase in provenance; unknown physical drivers, timezone and capture-time tune remain unknown unless the owner explicitly selects a scene. No inference from today's hardware. UI previews source bandwidth/data before copying; source details are expandable. See `docs/REW.md`.
+- Usability work: themed modal border/backdrop, outcome-focused labels, bounded capture-list scrolling, imported-result focus/scroll to its heading, readable validation errors and separate offline/ready/write/recovery states. Full product/accessibility/mobile acceptance is still open.
+- `docs/research/COMMUNITY-UX.md` captures Tim's ongoing research requirement and first source-backed observations with acceptance criteria. Searched DIYMobileAudio/CarAudio.com and firsthand r/CarAV reports. DIYMA direct fetch failed and is explicitly an unread lead; do not claim a consensus or infer a technical rule from it. Review preferences and implementation decisions remain separate.
+
+Validation:
+- **255 Python tests passed** locally; **230 passed / 25 skipped** from a clean archive without private inputs/generated UI. **37 frontend tests**, clean Svelte/TS **0 errors/0 warnings**, build passed.
+- Native Brave review at temporary :8780: emulator read-only connect → disconnect → explicitly write-enabled connect → review → type confirmation → send → writes-active → disconnect. REW browser → preview → import used a generated HTTP fixture at :48735, with no physical REW/audio/DSP activity. Imported copy visibly kept unknown outputs/hardware/tune. Fixture service stopped after testing; no live REW compatibility claim.
+- Isolated temporary state `/tmp/helix-unwound-connections-review`; old :8765 user server/data untouched. Temporary demo :8779 from milestone 8 may also remain running. Public branch/PR1 updated; no main merge/release/firmware/hardware use.
+
 ## Next tasks
 
 1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
@@ -213,12 +230,10 @@ Validation:
 4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
 5. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 
-Work while hardware captures are pending: add a **Svelte device connection/recovery panel**
-(currently only API/legacy UI exposes connection actions; verify workflows against
-the emulator without claiming hardware semantics), then **read-only REW integration**
-(connect/discover capabilities, import measurement data with provenance, no automated
-sweeps or channel switching), then saved-state transaction/recovery improvements,
-responsive/keyboard acceptance and a guided first-run flow. Argon's longer-term
+Work while hardware captures are pending: next saved-state transaction/recovery
+improvements and durable tune history, then responsive/keyboard acceptance and a
+guided first-run flow. Continue community UI/UX research and test live REW
+compatibility when available; the new adapter currently has fixture acceptance. Argon's longer-term
 adaptive/embedded roadmap was reviewed; no USB/HID rewrite, native sweep engine,
 CAN adaptation or autonomous hardware writes were adopted from it.
 

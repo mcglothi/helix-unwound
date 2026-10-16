@@ -3,15 +3,14 @@
   import { app, type Mode } from '../state.svelte'
   import { theme } from '../theme.svelte'
   import Settings from './Settings.svelte'
+  import DevicePanel from './DevicePanel.svelte'
+  import { connectionStatus } from '../device'
 
   let settingsOpen = $state(false)
+  let deviceOpen = $state(false)
 
   const dev = $derived(app.status?.device)
-  const devText = $derived(
-    !dev || dev.kind === 'none' ? 'Offline · editing only'
-      : dev.sync_state === 'uncertain' ? `${dev.model ?? dev.kind} · state unknown`
-      : `${dev.model ?? dev.kind} · ${dev.writes_enabled ? (dev.baselined ? 'LIVE' : 'not synced') : 'read-only'}`,
-  )
+  const devText = $derived(connectionStatus(app.status))
   const ab = $derived(app.status?.ab)
   const live = $derived(!!dev?.writes_enabled && !!dev?.baselined)
   const MODES: { m: Mode; l: string }[] = [{ m: 'studio', l: 'Studio' }, { m: 'drive', l: 'Drive' }, { m: 'setup', l: 'Setup' }, { m: 'system', l: 'System' }, { m: 'measurements', l: 'Measurements' }]
@@ -52,7 +51,7 @@
   </nav>
   <span class="tune mono" title="Current tune">{app.tune?.name ?? '…'}</span>
   <span class="spacer"></span>
-  <span class="pill mono" class:live>{devText}</span>
+  <button class="pill mono" class:live aria-label="Connection and recovery" onclick={() => deviceOpen = true}>{devText}</button>
   <span class="pill mono">{app.system?.measurement_count ?? 0} measurements</span>
   <select aria-label="Scenes and snapshots" onchange={snapshot}>
     <option value="">Scenes…</option>
@@ -83,6 +82,7 @@
 {#if app.status?.demo}
   <div class="demo-banner" role="status"><strong>Demo workstation</strong> · Synthetic hardware and generated captures. Physical device connections are disabled.</div>
 {/if}
+<DevicePanel bind:open={deviceOpen} />
 <Settings bind:open={settingsOpen} />
 
 <style>

@@ -201,7 +201,7 @@ Validation:
 Validation:
 - **227 Python tests passed** locally; **202 passed / 25 skipped** from a clean Git archive without private inputs/generated UI. Ten new synthetic demo cases cover isolation, durable edits, guards, CLI startup and authentication.
 - **34 frontend tests**, Svelte/TS **0 errors/0 warnings**, production build. Wheel built with and without UI; built wheel's isolated demo/API smoke passed.
-- First hosted run **38831378358 passed all five jobs**, including both Python versions on both OSes and frontend/packaging. Follow-up installed-wheel smoke was added after this run and passed locally; check the latest PR checks for hosted status.
+- First hosted run **38831378358 passed all five jobs**, including both Python versions on both OSes and frontend/packaging. Follow-up run **38831607646 also passed all five jobs**, including the isolated installed-wheel demo/API smoke.
 - Native Brave desktop review on temporary port 8779 verified rendered Studio/banner, Auto-EQ preview, Apply (two bands), and Undo (zero bands). Additional browser actions stopped when the user changed browser state. This is limited desktop acceptance; phone/tablet, session sign-out/expiry and protection-review rendered coverage remain pending.
 - Temporary demo process on :8779 uses `/tmp/helix-unwound-demo-review-20261015`; it is independent of the old :8765 server and `~/.helixtune`. No physical hardware, user state migration or firmware access. Public branch pushed under Tim's authorization.
 
@@ -213,7 +213,9 @@ Validation:
 4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
 5. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 
-Work while hardware captures are pending: next implement **read-only REW integration**
+Work while hardware captures are pending: add a **Svelte device connection/recovery panel**
+(currently only API/legacy UI exposes connection actions; verify workflows against
+the emulator without claiming hardware semantics), then **read-only REW integration**
 (connect/discover capabilities, import measurement data with provenance, no automated
 sweeps or channel switching), then saved-state transaction/recovery improvements,
 responsive/keyboard acceptance and a guided first-run flow. Argon's longer-term

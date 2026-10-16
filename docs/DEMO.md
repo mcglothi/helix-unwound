@@ -43,8 +43,8 @@ refuses to open a demo data directory.
 - Open Measurements: the names/source identify generated curves, with fictional
   driver identities and baseline tune. These are not microphone captures or
   owner evidence about a physical installation.
-- Explore Drive, System, themes and scenes. Hardware controls in Setup can attach
-  only to the in-memory emulator. Full overwrite and incremental writes there
+- Explore Drive, System, themes and scenes. The device API can attach
+  only to the in-memory emulator; the Svelte connection panel is still pending. Full overwrite and incremental writes there
   exercise software behavior against invented addresses, not a real DSP.
 
 The demo banner remains visible after sign-in. The backend refuses physical

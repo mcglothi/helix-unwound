@@ -22,6 +22,17 @@ def make(dev=None, **kw):
     return dev, bauds, Session(Client(dev, allow_writes=True, timeout=0.05), set_baud, sleep=lambda s: None, **kw)
 
 
+def wait_for(cond, timeout=3.0, step=0.01):
+    """Poll instead of fixed sleeps: CI runners (macOS) schedule threads slowly."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return True
+        time.sleep(step)
+    return cond()
+
+
 def sent(dev):
     return wire_commands(b"".join(dev.log))
 
@@ -139,12 +150,10 @@ def test_keepalive_pings_and_marks_a_silent_dsp_uncertain(synthetic_mapping, tmp
     engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path, keepalive_s=0.02)
     dev = EmulatedDevice()
     engine.attach(Client(dev, allow_writes=True, timeout=0.02), "emulator")
-    time.sleep(0.15)
-    pings = sum(1 for c in sent(dev) if c[:1] == H("02"))
-    assert pings >= 3
+    assert wait_for(lambda: sum(1 for c in sent(dev) if c[:1] == H("02")) >= 3)
     dev.baudrate = LOW                        # simulate the link dropping out of sync
-    time.sleep(0.15)
-    assert engine.device.sync_state == "uncertain" and "keep-alive" in engine.device.last_error
+    assert wait_for(lambda: engine.device.sync_state == "uncertain")
+    assert "keep-alive" in engine.device.last_error
     engine.detach()
 
 
@@ -158,8 +167,8 @@ def test_missed_keepalive_invalidates_baseline_and_stops_incremental_writes(synt
     engine.push_full("OVERWRITE")
     assert engine.device.baselined
     dev.baudrate = LOW                                   # link drops out of sync
-    time.sleep(0.15)
-    assert engine.device.sync_state == "uncertain" and not engine.device.baselined
+    assert wait_for(lambda: engine.device.sync_state == "uncertain")
+    assert not engine.device.baselined
     assert engine.applied_image is None and engine.pending_writes > 0
     before = len(dev.log)
     result = engine.edit("test", "gain", lambda t: setattr(t.channel("A"), "gain_db", -3.0))

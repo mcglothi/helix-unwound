@@ -5,7 +5,7 @@ Structure (observed in PC-Tool 4.20b presets for Dev=15, HELIX DSP PRO MK2):
     <OC ON=out# CN=name# LG=link group DG=delay group CINV MT ...>   x12
       <Fil FN=ON*100+n T=type F=Hz G=dB Q I dF=default Hz/>     n 0..29 EQ, 30 LP, 31 HP
       <Vol T L=linear gain i/>
-      <T T=delay PM P=phase/>
+      <T T=delay samples PM P=unknown/>  P is not the phase shown in PC-Tool
     <IC IN CN ...> x12 with 5 input-EQ bands (FN=IN//2*200+n)
     <Route><R .../></Route>   routing matrices
     <DCM> device config </DCM>
@@ -33,11 +33,11 @@ PRO_MK2_DEV = "15"
 CHANNEL_NAMES = [
     "Not assigned", "Front L Full", "Front R Full", "Front L High", "Front R High", "Front L Mid",
     "Front R Mid", "Front L Low", "Front R Low", "Front Center Full", "Front Center High",
-    "Front Center Low", "Rear L Full", "Rear R Full", "Rear L High", "Rear R High", "Rear L Mid",
+    "Front Center Low", "F Sum", "Rear L Full", "Rear R Full", "Rear L High", "Rear R High", "Rear L Mid",
     "Rear R Mid", "Rear L Low", "Rear R Low", "Rear Fill Full", "Rear Fill High", "Rear Fill Low",
     "Rear Sum", "Subwoofer 1", "Subwoofer 2", "Subwoofer 3", "Subwoofer 4", "Line Out 1",
     "Line Out 2", "Line Out 3", "Line Out 4", "Line Out 5", "Line Out 6", "Line Out 7", "Line Out 8",
-    "Subwoofer L",
+    "Subwoofer L", "Subwoofer R",
 ]
 
 # Fil T codes (PROVISIONAL): crossover active/bypassed, EQ band types
@@ -103,7 +103,7 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
             continue  # aux outputs beyond A-J
         ch: Channel = tune.channels[on]
         cn = int(oc.get("CN", 0))
-        cname = CHANNEL_NAMES[cn] if cn < len(CHANNEL_NAMES) else f"CN{cn}"
+        cname = CHANNEL_NAMES[cn] if 0 <= cn < len(CHANNEL_NAMES) else f"CN{cn}"
         fils = {int(f.get("FN")) % 100: f for f in oc.findall("Fil")}
         ch.name = "" if cn == 0 else cname
         ch.role = role_for(cname) if cn else Role.UNUSED
@@ -115,9 +115,9 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
             ch.gain_db = round(20 * math.log10(lin), 2) if lin > 0 else -60.0
         t = oc.find("T")
         if t is not None and t.get("T") is not None:
-            ch.delay_ms = round(int(t.get("T")) / sample_rate * 1000, 4)  # PROVISIONAL: samples
+            ch.delay_ms = round(int(t.get("T")) / sample_rate * 1000, 4)  # samples at 96 kHz; compared with PC-Tool 4.80b demo output
             if float(t.get("P", "0")) != 0:
-                rep.warnings.append(f"{ch.id}: phase {t.get('P')}° (PM={t.get('PM')}) not modelled yet")
+                rep.warnings.append(f"{ch.id}: unknown preset T.P={t.get('P')} (PM={t.get('PM')}) not applied; this is not the phase displayed by PC-Tool")
         ch.hp = _xo(fils.get(31), XO_HP_ON)
         ch.lp = _xo(fils.get(30), XO_LP_ON)
         bands = []

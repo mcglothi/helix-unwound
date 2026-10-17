@@ -1,6 +1,6 @@
 # helixTune handoff
 
-Last Updated: 2026-10-15
+Last Updated: 2026-10-17
 Status: ✅ Milestone 11 output setup, routing migration fix and keyboard/mobile navigation complete
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
@@ -249,6 +249,16 @@ Validation: **272 Python tests passed** locally; **247 passed / 25 skipped** fro
 - Tim is coordinating repo graphics/logo ideas externally with Gemini; no branding assets modified in this milestone.
 
 Validation: **287 Python tests passed** locally; **262 passed / 25 skipped** from a clean staged Git archive without private inputs or built UI. **43 frontend tests**, Svelte/TS **0 errors/warnings**, production build passed. Fifteen new synthetic API/model cases and six frontend helper cases cover stale edits, permissions, safety, live-write failure, custom routing, all-Off persistence and keyboard guards.
+
+## PC-Tool preset evidence follow-up (2026-10-17)
+
+✅ COMPLETE (Codex corrections following Claude's demo-mode review)
+
+- Claude loaded two existing presets in PC-Tool 4.80b Demo Mode on the capture laptop, without DSP hardware; local evidence is in `../win11-capture/preset-ground-truth/FINDINGS.md` and screenshots. This validates observed preset/UI relationships, not USB write/readback behavior.
+- Corrected the missing `F Sum` label at CN12 and terminal `Subwoofer R`; CN25/26 now name Subwoofer 1/2. Invalid negative codes no longer index the end of the label table. Existing role inference remains unchanged.
+- Unknown `<T P>` values are reported as preset parameters, without degree units or claims that they are the displayed phase. They remain unapplied. Delay's sample interpretation is annotated with the demo comparison; no crossover-family heuristic or hardware protocol was changed.
+- Checked both local preset XMLs: active crossover slope is `G=-24`; neither has a `dB` attribute. Sent this terminology clarification back to Claude for the evidence notes.
+- **302 Python tests passed** locally; 15 new portable synthetic cases cover label boundaries, unknown codes, delay conversion and unknown-P reporting. No private XML, screenshots, binaries or user state committed. Physical USB captures remain the next source of hardware evidence.
 
 ## Next tasks
 

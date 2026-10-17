@@ -106,6 +106,7 @@ export function tokens(sc: Scheme): Record<string, string> {
     '--accent-text': ensure(accent, panel, ink, 4.5),
     '--ok': ensure(p.base0B, panel, ink, 3),
     '--warn': ensure(p.base08, panel, ink, 3),
+    '--caution': ensure(p.base0A, panel, ink, 3),
     '--c-sub': ensure(p.base0E, panel, ink, 3),
     '--c-midbass': ensure(p.base09, panel, ink, 3),
     '--c-mid': ensure(p.base0B, panel, ink, 3),

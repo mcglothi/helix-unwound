@@ -376,7 +376,7 @@ def create_app(engine: Engine) -> FastAPI:
     def check_safety(snapshot: str | None = None):
         """Problems the current tune (or a saved snapshot) has under the policy and recorded driver specs."""
         t = engine.snapshot_tune(snapshot) if snapshot else engine.tune
-        return {"tune": t.name, "problems": engine._check(t)}
+        return {"tune": t.name, "problems": engine._check(t), "advisories": engine._advisories(t)}
 
     @app.get("/api/events")
     def events(limit: int = 50):

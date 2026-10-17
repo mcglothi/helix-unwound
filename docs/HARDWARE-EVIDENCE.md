@@ -69,5 +69,18 @@ action; no session, baud-switch, selection or store command is enabled by it.
   a channel. Whole-tune replacement and proposals set every channel explicitly and are not
   propagated.
 
+## Protection tiers (2026-10-17)
+
+High-pass protection is reported in three tiers. **Red (blocks):** role floors and
+manufacturer-published limits; also the Fs-multiple margin for a driver whose manufacturer
+publishes no minimum (it is then the only driver-specific floor). **Yellow (allowed,
+reported):** the Fs-multiple margin of a driver whose manufacturer minimum is lower, e.g.
+Audiofrog GB25: manufacturer 200 Hz / 12 dB/oct is enforced, 1.5 x Fs = 255 Hz is advisory,
+so Tim's long-running 220.67 Hz mid high-pass is yellow and 190 Hz is red. **Green:** above
+both. Recorded constraints keep their provenance; `ProtectionBook.is_advisory` classifies the
+Fs constraint as advisory only while the same driver's `hp_min` constraint is not cleared.
+`/api/status` and `/api/safety/check` return `advisories`; the UI shows them in the
+`--caution` (base16 yellow) colour.
+
 Director interaction, Save&Store/flash writes, master volume, routing and the
 unsupported operation families remain explicit follow-up work.

@@ -141,6 +141,7 @@ class Engine:
         protection_file = self.data_dir / "protections.json"
         self.protection_book = provenance.load(protection_file.read_text() if protection_file.exists() else None)
         self.protections = self.protection_book.effective()
+        self.advisory_protections = self.protection_book.effective(include_advisory=True)
         # Migrate current tune + equipment conservatively; snapshots never own these floors.
         self._persist_protections(self.tune)
 
@@ -453,7 +454,8 @@ class Engine:
         self._write_snapshot(safe, tune.model_dump_json(indent=2), overwrite)
         problems = self._check(tune)
         self._log("engine", f"imported preset {safe}" + (f" ({len(problems)} safety issues)" if problems else ""))
-        return {"snapshot": safe, "warnings": rep.warnings, "safety_problems": problems}
+        return {"snapshot": safe, "warnings": rep.warnings, "safety_problems": problems,
+                "safety_advisories": self._advisories(tune)}
 
     def import_mdat(self, path: Path, tune_snapshot: str | None) -> list[dict]:
         tune = self.snapshot_tune(tune_snapshot) if tune_snapshot else None
@@ -927,6 +929,7 @@ class Engine:
             "recovery_notice": self.recovery_notice,
             "pending_writes": None if self.device.baselined else self.pending_writes,
             "recent_events": [e.__dict__ for e in self.events[-20:]],
+            "advisories": self._advisories(self.tune),
         }
 
     # ---- equipment / system design ---------------------------------------------------------
@@ -959,6 +962,10 @@ class Engine:
                             driver_limits=equipment.channel_driver_limits(self.design),
                             protections=self.protections)
 
+    def _advisories(self, t: Tune) -> list[str]:
+        return safety.advisories(t, self.policy, driver_limits=equipment.channel_driver_limits(self.design),
+                                 protections=self.protections, advisory_protections=self.advisory_protections)
+
     def _persist_protections(self, t: Tune) -> None:
         with self._lock:
             updated = provenance.reconcile(self.protection_book, t, self.policy, self.design)
@@ -973,6 +980,7 @@ class Engine:
             temporary.replace(path)
         self.protection_book = value
         self.protections = value.effective()
+        self.advisory_protections = value.effective(include_advisory=True)
 
     def configure_output_protection(self, cid: str, value: safety.OutputProtection, confirm: str) -> dict:
         """Retired bulk operation; retain an explicit error for older clients."""

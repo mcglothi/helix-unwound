@@ -36,6 +36,9 @@
              onchange={(e) => app.patchChannel(ch.id, { name: e.currentTarget.value })} />
       <span class="mono muted">Out {ch.id}</span>
     </header>
+    {#each (app.status?.advisories ?? []).filter((a) => a.startsWith(`${ch.id}:`)) as note}
+      <p class="advisory" role="status">⚠ {note.slice(ch.id.length + 2)}</p>
+    {/each}
     {#if partners.length}
       <p class="linknote muted">Linked with {partners.join(', ')}: gain, mute, polarity, crossover and EQ edits apply to
         {partners.length > 1 ? 'all of them' : 'both'} (delay, name and routing stay separate).
@@ -122,6 +125,7 @@
   .inspector { padding: 14px; display: flex; flex-direction: column; gap: 12px; height: 100%; overflow: auto; }
   header { display: flex; align-items: center; gap: 10px; }
   .linknote { margin: 6px 0 0; font-size: 12px; }
+  .advisory { margin: 6px 0 0; font-size: 12px; color: var(--caution); }
   .linknote .link { padding: 2px 8px; font-size: 12px; margin-left: 6px; }
   .swatch { width: 12px; height: 12px; border-radius: 50%; flex: none; }
   .name { flex: 1; min-width: 0; font-weight: 600; font-size: 16px; background: transparent; border-color: transparent; }

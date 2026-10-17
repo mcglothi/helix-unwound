@@ -47,6 +47,7 @@ class AppState {
   specFields = $state<SpecFields>({})
   protections = $state<Record<string, OutputProtection>>({})
   protectionConstraints = $state<Record<string, ProtectionConstraint>>({})
+  advisoryProtections = $state<Record<string, OutputProtection>>({})
   selectedComponent = $state<string | null>(null)
   private pollTimer: ReturnType<typeof setInterval> | undefined
   private generation = 0
@@ -70,11 +71,12 @@ class AppState {
       api<ResponseView>('GET', '/api/response?points=240'),
       api<string[]>('GET', '/api/snapshots'),
       api<Design>('GET', '/api/design'),
-      api<{ outputs: Record<string, OutputProtection>; constraints: Record<string, ProtectionConstraint> }>('GET', '/api/protections'),
+      api<{ outputs: Record<string, OutputProtection>; advisory_outputs?: Record<string, OutputProtection>; constraints: Record<string, ProtectionConstraint> }>('GET', '/api/protections'),
     ])
     if (generation !== this.generation) return
     this.design = design
     this.protections = protections.outputs
+    this.advisoryProtections = protections.advisory_outputs ?? {}
     this.protectionConstraints = protections.constraints
     if (!Object.keys(this.specFields).length) this.specFields = await api<SpecFields>('GET', '/api/design/spec-fields')
     this.tune = tune

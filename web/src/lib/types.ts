@@ -35,6 +35,8 @@ export interface Status {
   save_error?: string | null; recovery_notice?: string | null
   pending_writes: number | null; recent_events: EngineEvent[]
   ab: ABState; proposals: ProposalInfo[]
+  /** yellow tier: allowed settings below a recommended (not enforced) margin */
+  advisories?: string[]
 }
 export interface Proposal {
   id: string; kind: string; title: string; notes: string[]; source: string
@@ -116,5 +118,7 @@ export interface ProtectionConstraint {
   id: string; output: string; field: 'min_hp_hz' | 'min_hp_slope_db' | 'max_lp_hz' | 'fs_factor'
   value: number; unit: string; source: Record<string, unknown>; current: boolean
   state: 'pending' | 'confirmed' | 'cleared'; fingerprint: string
+  /** yellow tier: reported, not enforced, because a manufacturer minimum governs */
+  advisory?: boolean
   history: { action: string; actor: string; reason: string; at: number }[]
 }

@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-17
-Status: ⚠️ Stored-preset backup implemented; live read-only Mac/DSP validation pending
+Status: ⚠️ Captured protocol, quantization, link groups, safety tiers and emulator-only session layer reviewed; live read-only Mac/DSP backup test pending (Tim, 2026-10-18)
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -283,13 +283,44 @@ Validation: **287 Python tests passed** locally; **262 passed / 25 skipped** fro
 - Native Brave synthetic transport acceptance verified backup, download link and copy-to-scene; active tune and Undo remained unchanged. Test server/tab closed. No real serial port opened or real user state used.
 - Validation: **366 Python tests** locally, including35 new backup cases (one optional private replay); frontend43, Svelte/TS0 errors/warnings and build passed. **340 passed / 26 skipped** from a clean staged Git archive. See `docs/STORED-PRESET-BACKUP.md` for live acceptance instructions and limits.
 
+## Claude checkpoints after the captures (2026-10-17)
+
+✅ Reviewed by Codex (read-only); published with Tim's approval.
+
+- `c421d70` — PC-Tool 8.24 quantization truncates toward zero (143/143 captured words bit-exact;
+  round 109); `.afpx` `LG` link groups imported; channel/band/crossover/EQ-reset edits copy the
+  edited item to linked channels (delay/name/role/routing per channel; `?link=false`); UI badge
+  and Unlink; Drive nudges stay per channel. Codex: no blockers.
+- `2e24b34` — capture-faithful emulator: identify layout (unit code zeroed), `02` echo, `1b`
+  status, silent `09`, `32 03` stored reads, erased flash `0xFF`. Codex: no blockers.
+- `94c8506` + `53ed071` — red/yellow/green high-pass tiers: the Fs-multiple margin is advisory
+  only beside a manufacturer minimum of the identical recorded driver; `fs_unbounded` keeps it
+  enforced for any driver on the output without one; import/status/check return advisories.
+  Codex found the id-only pairing and missing import advisories; both fixed and approved.
+- `ee6dc2e` + `78c5987` — session layer (emulator-only): captured open (baud recovery, identify,
+  `09 01`, high speed), keep-alive pinger under `serve`, close on detach. Codex found baseline
+  retention after a missed echo and identify-before-recovery; both fixed and approved. A missed
+  keep-alive now invalidates the baseline and pauses incremental writes until reconnect + a
+  confirmed full overwrite.
+
+Validation at `78c5987`: 398 Python (private capture comparisons ran locally), frontend 43,
+Svelte/TS 0 errors, production build. Each fix was falsified by reverting it.
+
+Before any physical session is enabled: (1) `Client.drain`'s deadline cannot interrupt a single
+blocking `transport.read`, so bound the serial read timeout too; (2) after a heartbeat failure,
+require reconnect to restart monitoring (the UI message already says so; enforce it); (3) handle
+partial-open/close failures on hardware. Physical transports still reject every session byte.
+
 ## Next tasks
 
-1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
-2. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
-3. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Portable CI is now implemented (milestone 8); settle a license before inviting community code contributions.
-4. Verify hardware protocol from Windows captures (overrides this order as soon as captures exist) before live writes: addresses, coefficient sign, fixed-point format, delay/mute/routing semantics, ACK validation, safeload/atomic updates, readback and reconnect behavior.
-5. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
+1. **Live read-only test (Tim, 2026-10-18):** `helixtune backup-stored` from the Mac on the DSP
+   (USB-C adapter); confirm 19200 session-free stored reads and byte equality with the extracted
+   2022 preset. Then plan the first supervised physical session/write (audio muted, power cycle as undo).
+2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
+3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
+4. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Portable CI is now implemented (milestone 8); settle a license before inviting community code contributions.
+5. Hardware protocol: framing, write command, EQ/crossover/delay/gain/mute/invert addresses and maths, quantization, link groups and the session sequence are confirmed by the 2026-10-17 captures. Still to capture before enabling them: master volume, routing matrix writes, 6/18 dB first-order slopes, Save&Store/flash and Director interaction.
+6. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 
 Work while hardware captures are pending: next measurement capture planning/verification
 guidance, then broader physical-phone/keyboard/accessibility acceptance. Continue community UI/UX research and test live REW

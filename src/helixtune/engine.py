@@ -160,6 +160,9 @@ class Engine:
                 from .emulator import EmulatedDevice
                 if kind != 'emulator' or not isinstance(client.t, EmulatedDevice):
                     raise EngineError('Demo mode only connects to its in-memory emulator')
+            from .emulator import EmulatedDevice
+            if client.allow_writes and not isinstance(client.t, EmulatedDevice):
+                raise EngineError("Physical writes are disabled pending captured-protocol validation; connect read-only or use the emulator")
             info = client.identify()
             if info.model_type != commands.PRO_MK2:
                 raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")

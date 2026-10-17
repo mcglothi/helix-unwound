@@ -4,7 +4,7 @@ Everything marked PROVISIONAL is a reading of SigmaStudio naming conventions tha
 still needs confirming against a capture of the original PC-Tool:
   - EQ block <-> channel assignment (EQ1/EQ2 = channel A, EQ1_k/EQ2_k = channel k)
   - stored biquad sign convention (SigmaStudio stores -a1, -a2)
-  - crossover slot usage (7 biquad stages + 2 first-order sections, series cascade)
+  - remaining slope variants beyond captured HP/LP LR12/LR24; fixed HP0..2, LP3..5 layout now follows captures
   - delay in integer samples, mute/invert as integer flags
 """
 
@@ -18,7 +18,7 @@ from .dsp import filters as F
 from .dsp.fixed import word_824, word_int
 from .model import CHANNELS, EQ_BANDS, Channel, Tune
 
-NEGATE_A = True  # PROVISIONAL
+NEGATE_A = True  # captured coefficient storage negates A1/A2
 XO_BIQUAD_SLOTS = 7
 XO_FIRST_ORDER_SLOTS = 2
 STAGES_PER_EQ_BLOCK = 15
@@ -91,17 +91,15 @@ class DeviceMapping:
     def crossover_sections(ch: Channel, fs: float) -> tuple[list[F.Biquad], list[F.FirstOrder]]:
         bqs: list[F.Biquad] = []
         fos: list[F.FirstOrder] = []
-        for xo, hp in ((ch.hp, True), (ch.lp, False)):
-            if xo is None:
-                continue
-            b, f = F.crossover_sections(xo.type, xo.slope_db, xo.freq_hz, fs, hp)
-            bqs += b
-            fos += f
-        if len(bqs) > XO_BIQUAD_SLOTS or len(fos) > XO_FIRST_ORDER_SLOTS:
-            raise MappingError(
-                f"channel {ch.id}: crossover needs {len(bqs)} biquads + {len(fos)} first-order "
-                f"sections; the DSP has {XO_BIQUAD_SLOTS} + {XO_FIRST_ORDER_SLOTS}. Reduce a slope.")
-        return bqs, fos
+        for label, xo, hp in (("HP", ch.hp, True), ("LP", ch.lp, False)):
+            b, f = (F.crossover_sections(xo.type, xo.slope_db, xo.freq_hz, fs, hp, pc_tool_q=True)
+                    if xo is not None else ([], []))
+            if len(b) > 3 or len(f) > 1:
+                raise MappingError(f"channel {ch.id}: {label} exceeds the captured fixed bank of 3 biquads + 1 first-order section; this slope layout is not supported")
+            bqs.extend(b + [F.Biquad.identity()] * (3 - len(b)))
+            fos.append(f[0] if f else F.FirstOrder.identity())
+        # Captures place HP in 0..2, LP in 3..5 and leave stage6 identity.
+        return bqs + [F.Biquad.identity()], fos
 
     @staticmethod
     def eq_sections(ch: Channel, fs: float) -> list[F.Biquad]:

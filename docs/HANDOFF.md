@@ -260,6 +260,17 @@ Validation: **287 Python tests passed** locally; **262 passed / 25 skipped** fro
 - Checked both local preset XMLs: active crossover slope is `G=-24`; neither has a `dB` attribute. Sent this terminology clarification back to Claude for the evidence notes.
 - **302 Python tests passed** locally; 15 new portable synthetic cases cover label boundaries, unknown codes, delay conversion and unknown-P reporting. No private XML, screenshots, binaries or user state committed. Physical USB captures remain the next source of hardware evidence.
 
+## First real USB capture reconciliation (2026-10-17)
+
+✅ Checkpoint complete; **physical application writes disabled** pending remaining validation
+
+- Claude supplied real PC-Tool↔DSP capture findings; local source `../win11-capture/captures-2026-10-17-FINDINGS.md`. Private captures/presets/maps remain ignored. Codex made no hardware connection and did not restart the old real-data server.
+- Corrected parameter command to `03 00 01 addr16 + words`, strict command/bank/address/channel ACK matching, identify payload174/frame179 and sync burst. Removed guessed RAM-read command; preset opcodes04/05 always refuse. Physical client transactions are identify-only, engine/API deny physical write enable, UI exposes emulator writes only. No override added.
+- Renderer now reserves HP0..2/FO1 and LP3..5/FO2, stage6 identity. Mapping uses captured .707 for two-pole Butterworth kernels; generic math remains ideal. Unsupported larger per-filter banks refuse rather than repack. Quantization and other slope/session/master/routing semantics remain open.
+- Offline audit reconstructed **93 writes / 93 ACKs across30 local capture files**. HP70 LR24, HP70 LR12 and LP400 LR24 matched rendered words within1LSB (18 words each). No byte-exact/generalized hardware compatibility claim.
+- Stored preset XML readback discovered by capture tooling is **stored state, not arbitrary live RAM readback**. Newer stored preset differs from old backups. No preset read/select/store feature enabled by this checkpoint. See `docs/HARDWARE-EVIDENCE.md`.
+- Validation: **331 Python tests** locally (29 new portable capture-structure/quarantine/layout regressions); frontend43, Svelte/TS0 errors/warnings and production build. **306 passed / 25 skipped** from a clean staged Git archive. Old running versions must not use hardware writes.
+
 ## Next tasks
 
 1. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
@@ -286,8 +297,8 @@ These are review recommendations, not approval for every proposed product featur
 
 ## Known limits at handoff
 
-- No protocol/hardware verification yet. Emulator and engine share provisional assumptions.
-- “Synchronized” only means all write requests returned responses accepted by the current client. ACK content, atomicity, safeload, and readback remain unverified; this is not a hardware-verified tune.
+- First PC-Tool USB captures now verify selected framing, commands and filter cases; Helix Unwound physical write/session integration remains unvalidated and is disabled. See HARDWARE-EVIDENCE.md.
+- “Synchronized” only means all write requests returned responses accepted by the current client. Parameter echo ACK content is now checked; atomicity, safeload and independent readback remain unverified; this is not a hardware-verified tune.
 - No automatic device mute or rollback is attempted after transport failure. Uncertainty can include partially applied filters. User must review and deliberately resynchronize.
 - The network API now enforces owner/agent capabilities, but same-user local processes that can read owner files can assume owner authority. Direct engine/CLI operations are trusted local operations; this is not an OS sandbox.
 - Aggregate filter headroom, safe power/excursion, and prediction-display issues remain open. Proposal conflict protection is implemented, but future solver dependencies must be added to its binding. These milestones do not establish speaker protection or public-release readiness.

@@ -1,7 +1,8 @@
 """In-memory stand-in for a HELIX DSP PRO MK2, speaking the decoded protocol.
 
-Behaviour beyond identify is modelled on our current (unverified) reading of the
-command table; replace guesses with captured responses as they arrive.
+Parameter write/echo structure follows the 2026-10-17 USB captures. Identification
+content, RAM contents and other behavior remain synthetic; emulator success is
+not evidence of successful hardware tuning.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from .protocol import commands, frame
 
 
 def default_identify_payload() -> bytes:
-    # Placeholder layout: real offsets unknown. Model string lives somewhere in 179 bytes.
+    # Placeholder layout: real offsets unknown. Model string lives somewhere in 174 bytes.
     body = bytearray(commands.IDENTIFY_RESPONSE_LEN)
     model = b"2DSP-PRO MK2"
     body[0x18] = ord("R")
@@ -50,11 +51,10 @@ class EmulatedDevice:
         if cmd == commands.Cmd.SET_BAUD:
             self.baud_code = p[1]
             return bytes([cmd])
-        if cmd == commands.Cmd.READ_RAM:
-            addr, n = int.from_bytes(p[1:3], "big"), p[3]
-            return bytes(self.ram[addr * 4 : addr * 4 + n])
         if cmd == commands.Cmd.WRITE_RAM:
-            addr, n = int.from_bytes(p[1:3], "big"), p[3]
-            self.ram[addr * 4 : addr * 4 + n] = p[4 : 4 + n]
-            return bytes([cmd, 0, 0, 0, 0])  # 5-byte payload -> 10-byte ack frame
+            if len(p) < 9 or p[1:3] != b"\x00\x01" or (len(p) - 5) % 4:
+                return bytes([cmd, 0xFF])
+            addr, data = int.from_bytes(p[3:5], "big"), p[5:]
+            self.ram[addr * 4 : addr * 4 + len(data)] = data
+            return p[:5]
         return bytes([cmd, 0xFF])

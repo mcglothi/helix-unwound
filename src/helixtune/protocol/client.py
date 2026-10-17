@@ -41,6 +41,13 @@ class Client:
         raise TimeoutError(f"no complete reply frame (got {bytes(buf).hex(' ')})")
 
     def transact(self, payload: bytes, *, timeout: float | None = None) -> frame.Frame:
+        if not payload:
+            raise ValueError("empty command")
+        from ..emulator import EmulatedDevice
+        if not isinstance(self.t, EmulatedDevice) and payload != commands.identify():
+            raise WritesDisabled("Physical transports are identify-only until captured session and parameter rendering are validated; emulator writes remain available")
+        if payload[0] in (0x04, 0x05):
+            raise WritesDisabled("Commands 04/05 are preset-storage operations, not RAM access; unsupported")
         if payload[0] in commands.MUTATING and not self.allow_writes:
             raise WritesDisabled(f"command 0x{payload[0]:02x} mutates the device; writes are disabled")
         self.t.reset_input_buffer()
@@ -54,4 +61,8 @@ class Client:
         return self.transact(commands.read_ram(address, length)).payload
 
     def write_ram(self, address: int, data: bytes) -> frame.Frame:
-        return self.transact(commands.write_ram(address, data))
+        payload = commands.write_ram(address, data)
+        reply = self.transact(payload)
+        if reply.channel != frame.DEFAULT_CHANNEL or reply.payload != payload[:5]:
+            raise frame.FrameError("parameter-write acknowledgement does not match command, bank and address")
+        return reply

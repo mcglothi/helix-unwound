@@ -802,6 +802,8 @@ def create_app(engine: Engine) -> FastAPI:
         with engine._lock:
             if engine.demo and c.port != "emulator":
                 raise EngineError("Demo mode cannot open physical ports; select emulator")
+            if c.port != "emulator" and c.allow_writes:
+                raise EngineError("Physical writes are disabled pending captured-protocol validation; connect read-only or use the emulator")
             engine.detach()
             if c.port == "emulator":
                 client = Client(EmulatedDevice(), allow_writes=c.allow_writes)

@@ -10,6 +10,7 @@
   let error = $state('')
   let review = $state<OverwriteReview | null>(null)
   let confirmation = $state('')
+  $effect(() => { if (port !== 'emulator') writes = false })
   const device = $derived(app.status?.device)
   const connected = $derived(!!device && device.kind !== 'none')
   const ready = $derived(canOverwrite(review, app.status, confirmation))
@@ -48,7 +49,7 @@
   <div class="head"><h2 id="connection-title">Connection & recovery</h2><button aria-label="Close connection panel" onclick={() => open = false}>Close</button></div>
   <div class="connection-status"><strong>{connectionStatus(app.status)}</strong><span>{device?.model ?? 'Choose a device to begin'}</span></div>
   {#if app.status?.demo}<p class="notice">Demo: only the in-memory emulator is available.</p>
-  {:else}<p class="notice">Hardware protocol remains unverified. Connecting does not import or back up the DSP's current tune.</p>{/if}
+  {:else}<p class="notice">Physical connections identify the device only. Hardware writes are disabled while captured protocol and parameter rendering are being reconciled. Connecting does not read or back up the current DSP tune.</p>{/if}
   {#if !connected}
     <label>Device<select bind:value={port} disabled={busy}>
       <option value="">Choose a device…</option><option value="emulator">In-memory emulator</option>
@@ -56,7 +57,7 @@
     </select></label>
     <button disabled={busy} onclick={refreshPorts}>Refresh ports</button>
     {#if !ports.length && !app.status?.demo}<p class="muted">No serial ports found. Check power, USB cable and operating-system access, then refresh. The emulator works without hardware.</p>{/if}
-    <label class="check"><input type="checkbox" bind:checked={writes} disabled={busy} />Allow this workstation to send changes</label>
+    <label class="check"><input type="checkbox" bind:checked={writes} disabled={busy || port !== 'emulator'} />Allow this workstation to send changes</label>
     <p class="muted">Start read-only to check the connection. Sending changes requires reviewing the workstation tune first.</p>
     <button disabled={!port || busy} onclick={() => act('/api/device/connect', { port, allow_writes: writes })}>{writes ? 'Connect with writes enabled' : 'Connect read-only'}</button>
   {:else}

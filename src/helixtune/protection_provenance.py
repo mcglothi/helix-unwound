@@ -54,11 +54,15 @@ class ProtectionBook(BaseModel):
         src = item.source
         if item.field != 'min_hp_hz' or src.get('kind') != 'equipment' or src.get('spec_key') != 'fs':
             return False
-        driver = (src.get('driver') or {}).get('id')
-        return any(other.state != 'cleared' and other.output == item.output and other.field == 'min_hp_hz'
-                   and other.source.get('kind') == 'equipment' and other.source.get('spec_key') == 'hp_min'
-                   and (other.source.get('driver') or {}).get('id') == driver
-                   for other in self.constraints.values())
+        # Same physical driver = identical recorded identity (id, make, model, serial, kind,
+        # channels), never the component id alone: a replacement reusing an id must not inherit
+        # the old driver's manufacturer minimum. Retained (non-current) pairs stay paired.
+        driver = src.get('driver')
+        return bool(driver) and any(
+            other.state != 'cleared' and other.output == item.output and other.field == 'min_hp_hz'
+            and other.source.get('kind') == 'equipment' and other.source.get('spec_key') == 'hp_min'
+            and other.source.get('driver') == driver
+            for other in self.constraints.values())
 
     def effective(self, include_advisory: bool = False) -> safety.OutputProtections:
         """Enforced (red) limits; include_advisory=True adds the yellow-tier margins."""

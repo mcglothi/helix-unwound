@@ -61,9 +61,9 @@ def tighten_outputs(tune: Tune, policy: SafetyPolicy, existing: OutputProtection
                     driver_limits: dict | None = None, *, advisory: bool = False) -> OutputProtections:
     """Learn stricter floors without ever relaxing previously recorded limits.
 
-    The Fs-multiple margin is enforced only for drivers without a manufacturer minimum
-    high-pass; where the manufacturer publishes one, that figure is the enforced (red)
-    floor and the margin is the advisory (yellow) floor, included when advisory=True."""
+    The Fs-multiple margin is enforced for every driver without a manufacturer minimum
+    high-pass (DriverLimits.fs_unbounded); for a driver that publishes one, that figure is the
+    enforced (red) floor and its Fs margin is advisory (yellow), included when advisory=True."""
     result = (existing or OutputProtections()).model_copy(deep=True)
     for ch in tune.channels:
         guard = result.outputs[ch.id]
@@ -72,9 +72,8 @@ def tighten_outputs(tune: Tune, policy: SafetyPolicy, existing: OutputProtection
         factor = max(guard.fs_factor, (rp.fs_factor or 0) if rp else 0)
         lim = (driver_limits or {}).get(ch.id)
         if lim:
-            fs_margin = factor * lim.fs if lim.fs and factor else None
-            if lim.hp_min and not advisory:
-                fs_margin = None
+            fs_basis = lim.fs if advisory else lim.fs_unbounded
+            fs_margin = factor * fs_basis if fs_basis and factor else None
             candidates = [v for v in (need, lim.hp_min, fs_margin) if v]
             need = max(candidates) if candidates else None
             if lim.lp_max:

@@ -74,3 +74,41 @@ def test_status_and_safety_check_report_advisories(synthetic_mapping, tmp_path):
         assert c.get("/api/status").json()["advisories"] == []
         body = c.get("/api/safety/check").json()
         assert body["problems"] == [] and body["advisories"] == []
+
+
+def test_replacement_reusing_a_component_id_does_not_inherit_the_old_maker_minimum():
+    """Codex review of 94c8506: pairing must use the full physical identity, not the id."""
+    old = {"id": "speaker1", "make": "OldCo", "model": "M1", "serial": "", "kind": "speaker", "channels": ["C"]}
+    new = {"id": "speaker1", "make": "NewCo", "model": "M2", "serial": "", "kind": "speaker", "channels": ["C"]}
+    maker = provenance.candidate("C", "min_hp_hz", 200.0, {"kind": "equipment", "driver": old, "spec_key": "hp_min",
+                                                          "spec": {"value": 200.0, "unit": "Hz"}})
+    maker.current = False                       # retained from the removed driver
+    fs = provenance.candidate("C", "min_hp_hz", 400.0, {"kind": "equipment", "driver": new, "spec_key": "fs",
+                                                       "spec": {"value": 266.7, "unit": "Hz"}, "factor": 1.5})
+    book = provenance.ProtectionBook(constraints={i.id: i for i in (maker, fs)})
+    assert not book.is_advisory(fs)
+    assert book.effective().outputs["C"].min_hp_hz == 400.0
+
+
+def test_a_second_driver_without_a_maker_minimum_keeps_its_fs_margin_enforced():
+    from helixtune.equipment import Component, Kind, SystemDesign, channel_driver_limits
+    def spk(cid, **specs):
+        return Component(id=cid, kind=Kind.SPEAKER, make="X", model=cid, channels=["C"],
+                         specs={k: {"value": v} for k, v in specs.items()})
+    design = SystemDesign(components=[spk("with-min", fs=100.0, hp_min=200.0), spk("fs-only", fs=300.0)])
+    limits = channel_driver_limits(design)
+    # fs-only driver: 1.5 x 300 = 450 Hz is its only driver-specific floor -> red
+    assert any("450" in p for p in safety.check(mid_tune(300.0), POLICY, driver_limits=limits))
+    assert safety.check(mid_tune(460.0), POLICY, driver_limits=limits) == []
+
+
+def test_scene_import_returns_advisories_for_the_ui(synthetic_mapping, tmp_path):
+    import struct
+    import zlib
+    from helixtune.engine import Engine
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path / "data")
+    xml = b'<ATF Dev="15" V="4.80b"><OC ON="0" CN="7" MT="1"/></ATF>'
+    path = tmp_path / "x.afpx"
+    path.write_bytes(struct.pack(">I", len(xml)) + zlib.compress(xml))
+    result = engine.import_afpx(path, name="x")
+    assert result["safety_advisories"] == [] and "safety_problems" in result

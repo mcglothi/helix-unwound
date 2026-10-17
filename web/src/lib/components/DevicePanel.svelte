@@ -15,6 +15,7 @@
   let sceneName = $state('Stored preset backup')
   let importedScene = $state('')
   let importWarnings = $state<string[]>([])
+  let importAdvisories = $state<string[]>([])
   $effect(() => { if (port !== 'emulator') writes = false })
   const device = $derived(app.status?.device)
   const connected = $derived(!!device && device.kind !== 'none')
@@ -22,7 +23,7 @@
   $effect(() => {
     if (open && !dialog.open) {
       dialog.showModal()
-      review = null; confirmation = ''; writes = false; error = ''; storedBackup = null; importedScene = ''; importWarnings = []
+      review = null; confirmation = ''; writes = false; error = ''; storedBackup = null; importedScene = ''; importWarnings = []; importAdvisories = []
       void refreshPorts()
     }
     if (!open && dialog.open) dialog.close()
@@ -43,7 +44,7 @@
     finally { await app.poll(); busy = false }
   }
   async function backupStored() {
-    busy = true; error = ''; storedBackup = null; importedScene = ''; importWarnings = []
+    busy = true; error = ''; storedBackup = null; importedScene = ''; importWarnings = []; importAdvisories = []
     try { storedBackup = await workstationRequest('POST', '/api/device/stored-preset/backup') }
     catch (e: any) { error = e.message }
     finally { busy = false }
@@ -52,9 +53,10 @@
     if (!storedBackup) return
     busy = true; error = ''
     try {
-      const result = await workstationRequest<{snapshot: string; warnings: string[]; safety_problems: string[]}>('POST', `/api/backups/stored/${storedBackup.id}/import`, {name: sceneName})
+      const result = await workstationRequest<{snapshot: string; warnings: string[]; safety_problems: string[]; safety_advisories?: string[]}>('POST', `/api/backups/stored/${storedBackup.id}/import`, {name: sceneName})
       importedScene = result.snapshot
       importWarnings = [...result.warnings, ...result.safety_problems]
+      importAdvisories = result.safety_advisories ?? []
     } catch (e: any) { error = e.message }
     finally {
       try { await app.refresh() }
@@ -104,6 +106,7 @@
           <button disabled={busy || !sceneName.trim()} onclick={importStored}>Copy backup to a scene</button>
           {#if importedScene}<p role="status">Scene “{importedScene}” created. It has not been loaded or sent to the DSP.</p>{/if}
           {#each importWarnings as warning}<p class="muted">{warning}</p>{/each}
+          {#each importAdvisories as advisory}<p class="advisory" role="status">⚠ {advisory}</p>{/each}
         {/if}
       </section>
     {/if}
@@ -127,6 +130,7 @@
   {#if busy}<p role="status">Working…</p>{/if}
 </dialog>
 <style>
+  .advisory { color: var(--caution); font-size: 12px; }
   dialog { width: min(600px, calc(100vw - 32px)); max-height: 85dvh; overflow-y: auto; padding: 24px; box-sizing: border-box; background: var(--panel); color: var(--ink); border: 1px solid var(--line-2); border-radius: var(--radius); box-shadow: 0 24px 80px rgb(0 0 0 / .35); }
   dialog::backdrop { background: rgb(0 0 0 / .55); backdrop-filter: blur(3px); }
   .stored { margin-block: 18px; padding-block: 14px; border-block: 1px solid var(--line); display: grid; gap: 12px; }

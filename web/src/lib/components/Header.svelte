@@ -3,15 +3,15 @@
   import { app, type Mode } from '../state.svelte'
   import { theme } from '../theme.svelte'
   import Settings from './Settings.svelte'
+  import DevicePanel from './DevicePanel.svelte'
+  import KeyboardShortcuts from './KeyboardShortcuts.svelte'
+  import { connectionStatus } from '../device'
 
   let settingsOpen = $state(false)
+  let deviceOpen = $state(false)
 
   const dev = $derived(app.status?.device)
-  const devText = $derived(
-    !dev || dev.kind === 'none' ? 'Offline · editing only'
-      : dev.sync_state === 'uncertain' ? `${dev.model ?? dev.kind} · state unknown`
-      : `${dev.model ?? dev.kind} · ${dev.writes_enabled ? (dev.baselined ? 'LIVE' : 'not synced') : 'read-only'}`,
-  )
+  const devText = $derived(connectionStatus(app.status))
   const ab = $derived(app.status?.ab)
   const live = $derived(!!dev?.writes_enabled && !!dev?.baselined)
   const MODES: { m: Mode; l: string }[] = [{ m: 'studio', l: 'Studio' }, { m: 'drive', l: 'Drive' }, { m: 'setup', l: 'Setup' }, { m: 'system', l: 'System' }, { m: 'measurements', l: 'Measurements' }]
@@ -44,7 +44,7 @@
 </script>
 
 <header>
-  <div class="brand">Helix<span>Tune</span></div>
+  <div class="brand">Helix <span>Unwound</span></div>
   <nav class="modes" aria-label="Mode">
     {#each MODES as { m, l }}
       <button class:active={app.mode === m} aria-pressed={app.mode === m} onclick={() => setMode(m)}>{l}</button>
@@ -52,8 +52,9 @@
   </nav>
   <span class="tune mono" title="Current tune">{app.tune?.name ?? '…'}</span>
   <span class="spacer"></span>
-  <span class="pill mono" class:live>{devText}</span>
-  <span class="pill mono">{app.system?.measurement_count ?? 0} measurements</span>
+  <button class="pill mono" class:live aria-label="Connection and recovery" onclick={() => deviceOpen = true}>{devText}</button>
+  <span class="pill mono measurement-count">{app.system?.measurement_count ?? 0} measurements</span>
+  <div class="tools" role="group" aria-label="Session tools">
   <select aria-label="Scenes and snapshots" onchange={snapshot}>
     <option value="">Scenes…</option>
     {#each app.snapshots as s}<option value={s}>{s}</option>{/each}
@@ -75,16 +76,33 @@
   <button aria-label="Undo" title="Undo" onclick={() => app.undo()} disabled={!app.status?.undo_depth}>
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/></svg>
   </button>
+  <button aria-label="Redo" title="Redo" onclick={() => app.redo()} disabled={!app.status?.redo_depth}>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/></svg>
+  </button>
+  <KeyboardShortcuts />
   <button onclick={signOut}>Sign out</button>
+  </div>
 </header>
+{#if app.status?.save_error}
+  <div class="device-error" role="alert">{app.status.save_error} <button disabled={app.busy} onclick={() => app.retrySave()}>Retry saving</button></div>
+{/if}
+{#if app.status?.recovery_notice}
+  <div class="demo-banner" role="status">{app.status.recovery_notice} The device remains disconnected.</div>
+{/if}
 {#if dev?.last_error}
   <div class="device-error" role="alert">{dev.last_error} Edits are staged offline until then.</div>
 {/if}
+{#if app.status?.demo}
+  <div class="demo-banner" role="status"><strong>Demo workstation</strong> · Synthetic hardware and generated captures. Physical device connections are disabled.</div>
+{/if}
+<DevicePanel bind:open={deviceOpen} />
 <Settings bind:open={settingsOpen} />
 
 <style>
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  .demo-banner { padding: 8px 16px; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--accent); font-size: 13px; line-height: 1.5; }
   .device-error { padding: 12px 16px; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--warn); }
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .brand { font-weight: 600; font-size: 17px; letter-spacing: .02em; }
   .brand span { color: var(--accent-text); }
   .modes { display: flex; max-width: 100%; overflow-x: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
@@ -99,5 +117,13 @@
   .ab { display: inline-flex; gap: 2px; padding: 3px; font-weight: 600; }
   .ab span { padding: 4px 10px; border-radius: 4px; color: var(--muted); }
   .ab span.on { background: var(--accent); color: var(--accent-ink); }
-  @media (max-width: 700px) { .tune, .pill:nth-of-type(2) { display: none; } }
+  @media (max-width: 700px) {
+    header { position: static; gap: 8px; padding: 10px; }
+    .brand { font-size: 15px; margin-right: auto; }
+    .tune, .measurement-count, .spacer { display: none; }
+    .modes { order: 2; width: 100%; box-sizing: border-box; }
+    .tools { order: 3; width: 100%; gap: 6px; }
+    .tools select { flex: 1; min-width: 80px; max-width: 120px; }
+    .pill { padding-inline: 8px; }
+  }
 </style>

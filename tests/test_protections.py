@@ -1,6 +1,8 @@
 import json
 
 import pytest
+
+from helixtune.protocol import commands
 from pydantic import ValidationError
 
 from helixtune import equipment, safety
@@ -80,7 +82,9 @@ def test_every_tune_adoption_path_enforces_saved_floors(engine, operation):
             engine.tune = original
             engine.push_full("OVERWRITE")
     if operation == "full_push":
-        assert len(device.log) == 1  # identify only; rejected before writing
+        from helixtune.protocol.session import wire_commands
+        sent = wire_commands(b"".join(device.log))
+        assert not [c for c in sent if c[:1] == bytes([commands.Cmd.WRITE_RAM])]  # rejected before any parameter write
 
 
 def test_protections_survive_restart_after_metadata_change(engine, synthetic_mapping):

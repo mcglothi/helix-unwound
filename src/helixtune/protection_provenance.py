@@ -46,14 +46,33 @@ class ProtectionBook(BaseModel):
     version: Literal[2] = 2
     constraints: dict[str, Constraint] = Field(default_factory=dict)
 
-    def effective(self) -> safety.OutputProtections:
+    def is_advisory(self, item: Constraint) -> bool:
+        """Yellow tier: the Fs-multiple high-pass margin of a driver whose manufacturer
+        publishes its own minimum high-pass. The manufacturer figure (red tier) governs;
+        the margin is reported, not enforced. Without a manufacturer minimum the Fs margin
+        is the only driver-specific floor and stays enforced."""
+        src = item.source
+        if item.field != 'min_hp_hz' or src.get('kind') != 'equipment' or src.get('spec_key') != 'fs':
+            return False
+        # Same physical driver = identical recorded identity (id, make, model, serial, kind,
+        # channels), never the component id alone: a replacement reusing an id must not inherit
+        # the old driver's manufacturer minimum. Retained (non-current) pairs stay paired.
+        driver = src.get('driver')
+        return bool(driver) and any(
+            other.state != 'cleared' and other.output == item.output and other.field == 'min_hp_hz'
+            and other.source.get('kind') == 'equipment' and other.source.get('spec_key') == 'hp_min'
+            and other.source.get('driver') == driver
+            for other in self.constraints.values())
+
+    def effective(self, include_advisory: bool = False) -> safety.OutputProtections:
+        """Enforced (red) limits; include_advisory=True adds the yellow-tier margins."""
         result = safety.OutputProtections()
         for key, item in self.constraints.items():
             payload = item.model_dump(include={'output', 'field', 'value', 'unit', 'source'})
             if key != item.id or item.id != fingerprint(payload):
                 raise ValueError('Invalid protection source fingerprint')
             safety.OutputProtection.model_validate({item.field: item.value})
-            if item.state == 'cleared':
+            if item.state == 'cleared' or (not include_advisory and self.is_advisory(item)):
                 continue
             guard = result.outputs[item.output]
             old = getattr(guard, item.field)
@@ -63,7 +82,9 @@ class ProtectionBook(BaseModel):
 
     def view(self) -> dict:
         return {**self.model_dump(), 'outputs': self.effective().model_dump()['outputs'],
-                'constraints': {key: {**item.model_dump(), 'fingerprint': item.review_fingerprint}
+                'advisory_outputs': self.effective(include_advisory=True).model_dump()['outputs'],
+                'constraints': {key: {**item.model_dump(), 'fingerprint': item.review_fingerprint,
+                                      'advisory': self.is_advisory(item)}
                                 for key, item in self.constraints.items()}}
 
 

@@ -4,6 +4,7 @@ Each measurement keeps the tune that was active when it was taken. Because we
 compute every filter ourselves, the response under any other tune is predicted as
 
     predicted_dB(f) = measured_dB(f) + |H_new(f)|dB - |H_then(f)|dB
+                      + master_now_dB - master_then_dB
 
 for the channels that were playing. RTA (magnitude-only) data supports magnitude
 prediction; summing between drivers needs phase (sweep data) and is approximated
@@ -63,6 +64,7 @@ class Measurement(BaseModel):
     # physical drivers that were on each measured channel: channel -> [{id, make, model}].
     # None = unknown provenance (e.g. imported legacy files); never inferred from import time.
     drivers: dict[str, list[dict[str, str]]] | None = None
+    import_provenance: dict = Field(default_factory=dict)
     drivers_source: str = ""                # how `drivers` was established, e.g. "owner attested …"
     driver_history: list[DriverProvenanceEvent] = Field(default_factory=list)
 
@@ -131,6 +133,32 @@ def _chain_db(tune: Tune, cids: list[str], grid: np.ndarray) -> dict[str, np.nda
     return {c: channel_response(tune.channel(c), tune.sample_rate, grid) for c in cids}
 
 
+def prediction_issues(m: Measurement, now: Tune) -> list[str]:
+    """Reasons a capture cannot support this magnitude-only projection."""
+    if m.tune is None:
+        return ["capture-time tune is unknown"]
+    if not m.channels or len(set(m.channels)) != len(m.channels):
+        return ["measured outputs are missing or duplicated"]
+    if (len(m.freqs) < 2 or len(m.freqs) != len(m.spl)
+            or not np.isfinite(m.freqs).all() or not np.isfinite(m.spl).all()
+            or min(m.freqs) <= 0 or np.any(np.diff(m.freqs) <= 0)
+            or max(abs(v) for v in m.spl) > 300):
+        return ["measurement frequencies/levels are invalid"]
+    issues = []
+    for cid in m.channels:
+        try:
+            then, new = m.tune.channel(cid), now.channel(cid)
+        except KeyError:
+            return ["measurement references an unknown output"]
+        if then.mute:
+            issues.append(f"{cid}: captured output was muted; its acoustic response cannot be recovered")
+        if then.mix != new.mix:
+            issues.append(f"{cid}: input routing changed since capture")
+        if len(m.channels) > 1 and (then.delay_ms != new.delay_ms or then.invert != new.invert):
+            issues.append(f"{cid}: delay/polarity changed in a combined capture; individual acoustic phase is unknown")
+    return issues
+
+
 def predict(m: Measurement, now: Tune, grid: np.ndarray = GRID) -> np.ndarray:
     measured = np.interp(np.log(grid), np.log(m.freqs), m.spl)
     if m.tune is None or not m.channels:
@@ -139,11 +167,11 @@ def predict(m: Measurement, now: Tune, grid: np.ndarray = GRID) -> np.ndarray:
     new = _chain_db(now, m.channels, grid)
     if len(m.channels) == 1:
         c = m.channels[0]
-        return measured + np.clip(new[c], -80, 40) - np.clip(then[c], -80, 40)
+        return measured + np.clip(new[c], -80, 40) - np.clip(then[c], -80, 40) + now.master_gain_db - m.tune.master_gain_db
     # several channels in one measurement: scale by the change in their power sum
     p_then = sum(10 ** (np.clip(v, -80, 40) / 10) for v in then.values())
     p_new = sum(10 ** (np.clip(v, -80, 40) / 10) for v in new.values())
-    return measured + 10 * np.log10(p_new / p_then)
+    return measured + 10 * np.log10(p_new / p_then) + now.master_gain_db - m.tune.master_gain_db
 
 
 # ---- legacy REW .mdat import --------------------------------------------------------

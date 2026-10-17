@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .dsp.filters import EqType
 from .emulator import EmulatedDevice
-from .engine import Engine, EngineError, MeasurementConflict, SafetyRejected, SnapshotExists
+from .engine import Engine, EngineError, MeasurementConflict, OutputSetupConflict, SafetyRejected, SnapshotExists
 from .mapping import MappingError
 from .model import EQ_BANDS, Crossover, Role, Tune
 from .protocol.client import Client
@@ -25,9 +25,15 @@ from .media import Library
 from .access import AccessControl, COOKIE, SessionLimit
 from .proposals import ProposalConflict
 from .safety import OutputProtection
-from .measurements import CaptureDriver
+from .measurements import CaptureDriver, Measurement
+from .rew import RewClient, RewError
 
 WEB = Path(__file__).parent / "web"
+
+
+# Channel fields a link group shares (captured: gain, mute, polarity). Name, role,
+# routing and delay stay per channel.
+LINKED_CHANNEL_FIELDS = frozenset({"gain_db", "mute", "invert"})
 
 
 class ChannelPatch(BaseModel):
@@ -38,6 +44,14 @@ class ChannelPatch(BaseModel):
     mute: bool | None = None
     invert: bool | None = None
     delay_ms: float | None = None
+    link_group: int | None = Field(None, ge=0, le=99)
+
+
+class OutputSetup(BaseModel):
+    name: str = Field(max_length=120)
+    role: Role
+    mix: dict[str, float]
+    expected_context: str = Field(min_length=16, max_length=16)
 
 
 class BandPatch(BaseModel):
@@ -59,6 +73,7 @@ class Connect(BaseModel):
 
 class Confirm(BaseModel):
     confirm: str
+    expected_context: str | None = Field(None, min_length=16, max_length=64)
 
 
 class SessionToken(BaseModel):
@@ -74,6 +89,15 @@ class ProtectionReview(BaseModel):
     action: Literal['confirm', 'clear']
     reason: str = Field(min_length=1, max_length=2000)
     expected_fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class RewImport(BaseModel):
+    port: int = Field(4735, ge=1024, le=65535)
+    uuid: str
+    expected_fingerprint: str
+    channels: list[str] = Field(default_factory=list)
+    seat: str = Field('driver', min_length=1, max_length=100)
+    tune_snapshot: str | None = None
 
 
 class SnapshotName(BaseModel):
@@ -214,6 +238,7 @@ def create_app(engine: Engine) -> FastAPI:
     app = FastAPI(title="helixtune", version="0.0.1", dependencies=[Depends(authorize_route)])
     access = AccessControl(engine.data_dir)
     app.state.access = access
+    app.state.rew_factory = RewClient
 
     @app.exception_handler(MeasurementConflict)
     async def _measurement_conflict(_, exc: MeasurementConflict):
@@ -291,7 +316,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.exception_handler(ValidationError)
     async def _validation(_, e: ValidationError):
-        return JSONResponse({"error": "invalid", "detail": e.errors(include_url=False)}, status_code=422)
+        return JSONResponse({"error": "invalid", "detail": e.errors(include_url=False, include_context=False, include_input=False)}, status_code=422)
 
     @app.exception_handler(EngineError)
     async def _engine(_, e: EngineError):
@@ -314,6 +339,17 @@ def create_app(engine: Engine) -> FastAPI:
     @app.get("/api/channels/{cid}")
     def get_channel(cid: str):
         return engine.tune.channel(cid)
+
+    @app.get("/api/outputs/{cid}/setup")
+    def output_setup_review(cid: str):
+        return engine.output_setup_review(cid)
+
+    @app.put("/api/outputs/{cid}/setup")
+    def save_output_setup(cid: str, p: OutputSetup, request: Request):
+        try:
+            return engine.save_output_setup(cid, source=_src(request), **p.model_dump())
+        except OutputSetupConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/response")
     def response(channels: str | None = None, points: int = 200):
@@ -340,7 +376,7 @@ def create_app(engine: Engine) -> FastAPI:
     def check_safety(snapshot: str | None = None):
         """Problems the current tune (or a saved snapshot) has under the policy and recorded driver specs."""
         t = engine.snapshot_tune(snapshot) if snapshot else engine.tune
-        return {"tune": t.name, "problems": engine._check(t)}
+        return {"tune": t.name, "problems": engine._check(t), "advisories": engine._advisories(t)}
 
     @app.get("/api/events")
     def events(limit: int = 50):
@@ -353,31 +389,51 @@ def create_app(engine: Engine) -> FastAPI:
     def put_tune(t: Tune, request: Request):
         return engine.apply(t, _src(request), "replaced whole tune")
 
+    # Link groups (PC-Tool LG): the edited item is copied to every linked channel, as the
+    # 2026-10-17 captures show. ?link=false edits one channel only (e.g. callers that
+    # already address each channel of a group themselves).
+    def _partners(t, cid: str, link: bool) -> list[str]:
+        return [c for c in t.linked(cid) if c != cid.upper()] if link else []
+
+    def _linked_note(cid: str, link: bool) -> str:
+        others = _partners(engine.tune, cid, link)
+        return f" (linked: {', '.join(others)})" if others else ""
+
     @app.patch("/api/channels/{cid}")
     @agent_allowed
-    def patch_channel(cid: str, p: ChannelPatch, request: Request):
+    def patch_channel(cid: str, p: ChannelPatch, request: Request, link: bool = True):
         fields = p.model_dump(exclude_none=True)
         engine.tune.channel(cid)  # 404 early
+        shared = {k: v for k, v in fields.items() if k in LINKED_CHANNEL_FIELDS}
 
         def f(t):
             ch = t.channel(cid)
             for k, v in fields.items():
                 setattr(ch, k, v)
-        return engine.edit(_src(request), f"{cid.upper()}: {_fmt(fields)}", f)
+            for other in _partners(t, cid, link):
+                for k, v in shared.items():
+                    setattr(t.channel(other), k, v)
+        note = _linked_note(cid, link) if shared else ""
+        return engine.edit(_src(request), f"{cid.upper()}: {_fmt(fields)}{note}", f)
 
     @app.put("/api/channels/{cid}/{which}")
     @agent_allowed
-    async def put_crossover(cid: str, which: Literal["hp", "lp"], request: Request, xo: Crossover | None = None):
+    async def put_crossover(cid: str, which: Literal["hp", "lp"], request: Request, xo: Crossover | None = None,
+                            link: bool = True):
         if not await request.body():
             raise HTTPException(422, "Supply a crossover object or explicit JSON null to bypass")
         engine.tune.channel(cid)
+
+        def f(t):
+            for c in [cid] + _partners(t, cid, link):
+                setattr(t.channel(c), which, xo.model_copy() if xo else None)
         return await run_in_threadpool(engine.edit, _src(request),
-                                       f"{cid.upper()} {which}: {_fmt(xo.model_dump(mode='json')) if xo else 'off'}",
-                                       lambda t: setattr(t.channel(cid), which, xo))
+                                       f"{cid.upper()} {which}: {_fmt(xo.model_dump(mode='json')) if xo else 'off'}"
+                                       f"{_linked_note(cid, link)}", f)
 
     @app.patch("/api/channels/{cid}/eq/{band}")
     @agent_allowed
-    def patch_band(cid: str, band: int, p: BandPatch, request: Request):
+    def patch_band(cid: str, band: int, p: BandPatch, request: Request, link: bool = True):
         if not 1 <= band <= EQ_BANDS:
             raise HTTPException(404, f"band must be 1..{EQ_BANDS}")
         fields = p.model_dump(exclude_none=True)
@@ -387,17 +443,20 @@ def create_app(engine: Engine) -> FastAPI:
             b = t.channel(cid).eq[band - 1]
             for k, v in fields.items():
                 setattr(b, k, v)
-        return engine.edit(_src(request), f"{cid.upper()} band {band}: {_fmt(fields)}", f)
+            for other in _partners(t, cid, link):  # PC-Tool copies the whole edited band
+                t.channel(other).eq[band - 1] = b.model_copy()
+        return engine.edit(_src(request), f"{cid.upper()} band {band}: {_fmt(fields)}{_linked_note(cid, link)}", f)
 
     @app.post("/api/channels/{cid}/eq/reset")
     @agent_allowed
-    def reset_eq(cid: str, request: Request):
+    def reset_eq(cid: str, request: Request, link: bool = True):
         engine.tune.channel(cid)
 
         def f(t):
-            for b in t.channel(cid).eq:
-                b.enabled, b.gain_db = False, 0.0
-        return engine.edit(_src(request), f"{cid.upper()}: EQ reset", f)
+            for c in [cid] + _partners(t, cid, link):
+                for b in t.channel(c).eq:
+                    b.enabled, b.gain_db = False, 0.0
+        return engine.edit(_src(request), f"{cid.upper()}: EQ reset{_linked_note(cid, link)}", f)
 
     @app.patch("/api/master")
     @agent_allowed
@@ -409,6 +468,15 @@ def create_app(engine: Engine) -> FastAPI:
     @agent_allowed
     def undo(request: Request):
         return engine.undo(_src(request))
+
+    @app.post("/api/redo")
+    @agent_allowed
+    def redo(request: Request):
+        return engine.redo(_src(request))
+
+    @app.post("/api/session/save")
+    def retry_save():
+        return engine.retry_save()
 
     # ---- snapshots ------------------------------------------------------------------
 
@@ -473,6 +541,45 @@ def create_app(engine: Engine) -> FastAPI:
     def delete_measurement(mid: str):
         engine.delete_measurement(mid)
         return {"ok": True}
+
+    # REW network access is owner-only, including GETs; agents cannot probe local services.
+    def rew_owner(request: Request):
+        if request.state.principal != 'owner':
+            raise HTTPException(403, 'Owner capability required')
+
+    @app.exception_handler(RewError)
+    async def rew_error(_, exc: RewError):
+        return JSONResponse({'detail': str(exc)}, status_code=400)
+
+    @app.get('/api/rew', dependencies=[Depends(rew_owner)])
+    def rew_discover(port: int = 4735):
+        return app.state.rew_factory(port).discover()
+
+    @app.get('/api/rew/measurements/{uid}', dependencies=[Depends(rew_owner)])
+    def rew_preview(uid: str, port: int = 4735):
+        return app.state.rew_factory(port).capture(uid)[0]
+
+    @app.post('/api/rew/import', dependencies=[Depends(rew_owner)])
+    def rew_import(value: RewImport):
+        preview, arrays = app.state.rew_factory(value.port).capture(value.uuid)
+        if preview['fingerprint'] != value.expected_fingerprint:
+            raise HTTPException(409, 'REW capture changed; refresh the preview before importing')
+        with engine._lock:
+            channels = sorted({engine.tune.channel(cid).id for cid in value.channels})
+            tune = engine.snapshot_tune(value.tune_snapshot) if value.tune_snapshot else None
+            provenance = {'provider': 'REW', 'port': value.port, **preview}
+            for info in engine.measurements.list():
+                existing = engine.measurements.get(info['id'])
+                if (existing.import_provenance == provenance and existing.channels == channels and
+                        existing.seat == value.seat and existing.tune == tune):
+                    return {'id': existing.id, 'created': False}
+            measurement = Measurement(name=preview['summary']['title'], kind='rew-import', channels=channels,
+                seat=value.seat, taken_at=0, source="Imported from REW",
+                notes=preview['summary']['notes'], tune=tune, import_provenance=provenance, **arrays)
+            engine.measurements.save(measurement)
+            engine.revision += 1
+            engine._log('owner', f'Imported REW capture {measurement.name}')
+            return {'id': measurement.id, 'created': True}
 
     # ---- targets & system view -----------------------------------------------------
 
@@ -712,6 +819,8 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.get("/api/ports")
     def ports():
+        if engine.demo:
+            return []
         from serial.tools import list_ports
 
         return [{"device": p.device, "vid": p.vid, "pid": p.pid, "description": p.description}
@@ -719,29 +828,53 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.post("/api/device/connect")
     def connect(c: Connect):
-        engine.detach()
-        if c.port == "emulator":
-            client = Client(EmulatedDevice(), allow_writes=c.allow_writes)
-            return engine.attach(client, "emulator").__dict__
-        import serial
+        with engine._lock:
+            if engine.demo and c.port != "emulator":
+                raise EngineError("Demo mode cannot open physical ports; select emulator")
+            if c.port != "emulator" and c.allow_writes:
+                raise EngineError("Physical writes are disabled pending captured-protocol validation; connect read-only or use the emulator")
+            engine.detach()
+            if c.port == "emulator":
+                client = Client(EmulatedDevice(), allow_writes=c.allow_writes)
+                return engine.attach(client, "emulator").__dict__
+            import serial
 
-        from .protocol.commands import LOW_HOST_BAUD
+            from .protocol.commands import LOW_HOST_BAUD
 
-        ser = serial.Serial(c.port, LOW_HOST_BAUD, bytesize=8, parity="N", stopbits=1, timeout=0.05)
-        try:
-            return engine.attach(Client(ser, allow_writes=c.allow_writes, timeout=1.0), "serial", c.port).__dict__
-        except Exception:
-            ser.close()
-            raise
+            ser = serial.Serial(c.port, LOW_HOST_BAUD, bytesize=8, parity="N", stopbits=1, timeout=0.05)
+            try:
+                return engine.attach(Client(ser, allow_writes=c.allow_writes, timeout=1.0), "serial", c.port).__dict__
+            except Exception:
+                ser.close()
+                raise
+
+    @app.post("/api/device/stored-preset/backup")
+    def backup_stored_preset():
+        return engine.backup_stored_preset()
+
+    @app.get("/api/backups/stored/{backup_id}", dependencies=[Depends(rew_owner)])
+    def download_stored_preset(backup_id: str):
+        return FileResponse(engine.stored_backup_path(backup_id), media_type="application/octet-stream",
+                            filename=f"stored-{backup_id}.afpx", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/backups/stored/{backup_id}/import")
+    def import_stored_preset(backup_id: str, value: SnapshotSave):
+        # Copy to a named scene only; never load/adopt it or relax output protections.
+        with engine._lock:
+            return engine.import_afpx(engine.stored_backup_path(backup_id), name=value.name, overwrite=False)
 
     @app.post("/api/device/disconnect")
     def disconnect():
         engine.detach()
         return {"ok": True}
 
+    @app.get("/api/device/review")
+    def review_overwrite():
+        return engine.overwrite_review()
+
     @app.post("/api/device/push-full")
     def push_full(c: Confirm, request: Request):
-        return {"writes": engine.push_full(c.confirm)}
+        return {"writes": engine.push_full(c.confirm, c.expected_context)}
 
     # ---- UI -----------------------------------------------------------------------------
 

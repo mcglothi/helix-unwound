@@ -40,12 +40,53 @@ class Client:
                     return f
         raise TimeoutError(f"no complete reply frame (got {bytes(buf).hex(' ')})")
 
-    def transact(self, payload: bytes, *, timeout: float | None = None) -> frame.Frame:
+    def _physical(self) -> bool:
+        from ..emulator import EmulatedDevice
+        return not isinstance(self.t, EmulatedDevice)
+
+    def _gate(self, payload: bytes) -> None:
+        if not payload:
+            raise ValueError("empty command")
+        if self._physical() and not commands.is_safe_read(payload):
+            raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
+        if payload[0] in (0x04, 0x05):
+            raise WritesDisabled("Commands 04/05 are preset-storage operations, not RAM access; unsupported")
         if payload[0] in commands.MUTATING and not self.allow_writes:
             raise WritesDisabled(f"command 0x{payload[0]:02x} mutates the device; writes are disabled")
+
+    def transact(self, payload: bytes, *, timeout: float | None = None) -> frame.Frame:
+        self._gate(payload)
         self.t.reset_input_buffer()
         self.t.write(frame.encode_tx(payload))
         return self._read_frame(timeout or self.timeout)
+
+    def send(self, payload: bytes) -> None:
+        """Fire-and-forget (session start/end, baud change): no reply or a truncated one."""
+        self._gate(payload)
+        self.t.reset_input_buffer()
+        self.t.write(frame.encode_tx(payload))
+
+    def send_sync(self) -> None:
+        """The 10 x 42 00 burst PC-Tool sends around every baud change."""
+        if self._physical():
+            raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
+        self.t.write(frame.SYNC_FRAME)
+
+    DRAIN_MAX_BYTES = 4096
+    DRAIN_DEADLINE_S = 0.25
+
+    def drain(self) -> bytes:
+        """Discard whatever arrived (e.g. a baud ack truncated by the rate change).
+        Bounded by bytes and time so a chattering line cannot stall the caller."""
+        got = bytearray()
+        deadline = time.monotonic() + self.DRAIN_DEADLINE_S
+        while len(got) < self.DRAIN_MAX_BYTES and time.monotonic() < deadline:
+            chunk = self.t.read(256)
+            if not chunk:
+                break
+            got += chunk
+        self.t.reset_input_buffer()
+        return bytes(got)
 
     def identify(self) -> commands.DeviceInfo:
         return commands.parse_identify(self.transact(commands.identify()).payload)
@@ -53,5 +94,19 @@ class Client:
     def read_ram(self, address: int, length: int) -> bytes:
         return self.transact(commands.read_ram(address, length)).payload
 
+    def read_stored(self, address: int, length: int) -> bytes:
+        request = commands.read_stored(address, length)
+        reply = self.transact(request)
+        name = address == 0 and length == 18
+        expected_length = 5 + length + (0 if name else 1)
+        if (reply.channel != frame.DEFAULT_CHANNEL or len(reply.payload) != expected_length
+                or reply.payload[:5] != request[:5] or (not name and reply.payload[-1] != 0)):
+            raise frame.FrameError("stored-preset reply does not match command, address and requested length")
+        return reply.payload[5:5 + length]
+
     def write_ram(self, address: int, data: bytes) -> frame.Frame:
-        return self.transact(commands.write_ram(address, data))
+        payload = commands.write_ram(address, data)
+        reply = self.transact(payload)
+        if reply.channel != frame.DEFAULT_CHANNEL or reply.payload != payload[:5]:
+            raise frame.FrameError("parameter-write acknowledgement does not match command, bank and address")
+        return reply

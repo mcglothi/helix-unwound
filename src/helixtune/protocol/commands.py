@@ -1,8 +1,9 @@
 """Command payload builders (inner payload, before framing).
 
-Layouts from the PC-Tool command switch FUN_00574f40. Addresses are 16-bit
-big-endian. Only the commands we have a use for are built here; names for
-anything beyond identify/baud are provisional until confirmed by capture.
+Parameter-write layout follows the 2026-10-17 PC-Tool USB captures: command
+03, bank 0001, 16-bit big-endian word address, whole 32-bit words. Preset-storage
+commands 04/05 must never be treated as RAM access. Other command families and
+full hardware session integration remain incomplete.
 """
 
 from __future__ import annotations
@@ -10,13 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 
-IDENTIFY_RESPONSE_LEN = 179  # FUN_0075db80 expects 0xb3 payload bytes
-WRITE_ACK_FRAME_LEN = 10     # most write commands wait for a 10-byte reply frame
+IDENTIFY_RESPONSE_LEN = 174  # captured payload; 179 bytes including frame overhead
+WRITE_ACK_FRAME_LEN = 10     # captured parameter echo: 5-byte payload + frame overhead
 
 
 class Cmd(IntEnum):
-    READ_RAM = 0x04      # provisional: 04 addrHi addrLo len
-    WRITE_RAM = 0x05     # provisional: 05 addrHi addrLo len data...
+    WRITE_RAM = 0x03     # captured: 03 00 01 addr16 + 32-bit words; no inner length
     IDENTIFY = 0x08
     SET_BAUD = 0x0A
 
@@ -32,7 +32,7 @@ HIGH_HOST_BAUD = 230400
 HIGH_WOQ_HOST_BAUD = 250000
 
 # Commands that change device state. The client refuses these unless writes are enabled.
-MUTATING = frozenset({Cmd.WRITE_RAM, 0x02, 0x03, 0x07, 0x11, 0x34, 0x35, 0x36, 0x37})
+MUTATING = frozenset({Cmd.WRITE_RAM, 0x04, 0x05, 0x07, 0x11, 0x34, 0x35, 0x36, 0x37})
 
 
 def _addr(address: int) -> bytes:
@@ -50,15 +50,40 @@ def set_baud(code: BaudCode) -> bytes:
 
 
 def read_ram(address: int, length: int) -> bytes:
-    if not 0 < length < 0x100:
-        raise ValueError("length must be 1..255")
-    return bytes([Cmd.READ_RAM]) + _addr(address) + bytes([length])
+    raise NotImplementedError("RAM readback is not established; commands 04/05 operate on preset storage")
 
 
 def write_ram(address: int, data: bytes) -> bytes:
-    if not 0 < len(data) < 0xFA:
-        raise ValueError("data length must be 1..249")
-    return bytes([Cmd.WRITE_RAM]) + _addr(address) + bytes([len(data)]) + data
+    if not data or len(data) % 4 or len(data) > 248:
+        raise ValueError("parameter data must contain 1..62 complete 32-bit words")
+    if address + len(data) // 4 > 0x10000:
+        raise ValueError("parameter write exceeds 16-bit address space")
+    return bytes([Cmd.WRITE_RAM, 0, 1]) + _addr(address) + data
+
+
+def read_stored(address: int, length: int) -> bytes:
+    if not isinstance(address, int) or not 0 <= address < 0x10000:
+        raise ValueError("stored-preset address out of range")
+    if not isinstance(length, int) or not 1 <= length <= 128 or address + length > 0x10000:
+        raise ValueError("stored-preset read must contain 1..128 bytes within memory bounds")
+    name = address == 0 and length == 18
+    if address < 18 and not name:
+        raise ValueError("stored-preset name must be read as one 18-byte block")
+    # Captured requests include a receive-sized body, sometimes containing stale
+    # PC-Tool buffer bytes. Match the size, but never send arbitrary buffer data.
+    padding = length if name else length + 1
+    return bytes([0x32, 0x03, address >> 8, address & 0xff, length]) + bytes(padding)
+
+
+def is_safe_read(payload: bytes) -> bool:
+    if payload == identify():
+        return True
+    if len(payload) >= 5 and payload[:2] == b"\x32\x03":
+        try:
+            return payload == read_stored(int.from_bytes(payload[2:4], "big"), payload[4])
+        except ValueError:
+            pass
+    return False
 
 
 @dataclass(frozen=True)
@@ -86,7 +111,7 @@ PRO_MK2 = 0x0F
 
 def parse_identify(payload: bytes) -> DeviceInfo:
     """Best-effort parse. The exact offset of the model string inside the
-    179-byte payload is not yet known, so search for any known prefix."""
+    174-byte payload is not yet known, so search for any known prefix."""
     text = payload.decode("latin-1")
     best: tuple[int, str, int] | None = None
     for prefix, mtype, _ in MODEL_PREFIXES:

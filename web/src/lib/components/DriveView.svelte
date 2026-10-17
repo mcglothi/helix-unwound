@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../state.svelte'
   import Graph from './Graph.svelte'
+  import PredictionSummary from './PredictionSummary.svelte'
   import ProposalCard from './ProposalCard.svelte'
   import type { Role } from '../types'
   import { ROLE_COLORS, ROLE_LABEL } from '../types'
@@ -15,7 +16,7 @@
 
   async function nudge(role: Role, d: number) {
     for (const c of (app.tune?.channels ?? []).filter((c) => c.role === role)) {
-      await app.patchChannel(c.id, { gain_db: Math.round((c.gain_db + d) * 2) / 2 })
+      await app.patchChannel(c.id, { gain_db: Math.round((c.gain_db + d) * 2) / 2 }, { link: false })
     }
   }
   const master = $derived(app.tune?.master_gain_db ?? 0)
@@ -32,6 +33,7 @@
 
   <section class="panel graph">
     <div class="head"><span class="label">Response · {app.seat}</span><span class="mono muted">target: {app.system?.target_name ?? '—'}</span></div>
+    <PredictionSummary />
     <div class="plot"><Graph compact /></div>
   </section>
 

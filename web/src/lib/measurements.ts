@@ -10,6 +10,7 @@ export interface MeasurementRecord {
   drivers: CaptureDrivers | null; current_drivers: CaptureDrivers; driver_history: DriverEvent[]
   status: 'current' | 'unknown' | 'stale'; status_reason: string; optimizable: boolean
   capture_fingerprint: string; drivers_source: string
+  import_provenance?: { provider?: string; points?: number; smoothing?: string; summary?: { uuid?: string; date?: string } }
 }
 
 export const hardwareLabel = (status: MeasurementRecord['status']): string =>

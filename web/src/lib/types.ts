@@ -10,6 +10,7 @@ export interface Channel {
   id: string; name: string; role: Role; gain_db: number; mute: boolean; invert: boolean
   delay_ms: number; hp: Crossover | null; lp: Crossover | null; eq: EqBand[]
   mix: Record<string, number>
+  link_group: number
 }
 export interface Tune {
   name: string; device: string; sample_rate: number; master_gain_db: number
@@ -28,9 +29,14 @@ export interface OutputProtection {
 export interface ProposalInfo { id: string; title: string; kind: string; changes: number; source: string }
 export interface ABState { A: string | null; B: string | null; active: 'A' | 'B' | null }
 export interface Status {
-  device: Device; tune_name: string; revision: number; undo_depth: number
+  demo: boolean
+  connection_epoch: number
+  device: Device; tune_name: string; revision: number; undo_depth: number; redo_depth?: number
+  save_error?: string | null; recovery_notice?: string | null
   pending_writes: number | null; recent_events: EngineEvent[]
   ab: ABState; proposals: ProposalInfo[]
+  /** yellow tier: allowed settings below a recommended (not enforced) margin */
+  advisories?: string[]
 }
 export interface Proposal {
   id: string; kind: string; title: string; notes: string[]; source: string
@@ -41,6 +47,12 @@ export interface SystemView {
   seat: string; freqs: number[]; target_name: string; measurement_count: number
   measured: number[] | null; predicted: number[] | null; target: number[] | null
   groups: Record<string, number[]>; channels: Record<string, number[]>
+  available_measurement_count: number; phase_verified: boolean
+  aggregation: 'none' | 'single_capture' | 'power_sum'
+  coverage: { outputs: string[]; missing_outputs: string[] }
+  contributors: { id: string; name: string; channels: string[]; fingerprint: string; taken_at: number; frequency_range_hz: number[] }[]
+  excluded: { id: string; name: string; reason: string }[]
+  limitations: string[]
 }
 export interface ResponseView { freqs: number[]; channels: Record<string, number[]> }
 
@@ -106,5 +118,7 @@ export interface ProtectionConstraint {
   id: string; output: string; field: 'min_hp_hz' | 'min_hp_slope_db' | 'max_lp_hz' | 'fs_factor'
   value: number; unit: string; source: Record<string, unknown>; current: boolean
   state: 'pending' | 'confirmed' | 'cleared'; fingerprint: string
+  /** yellow tier: reported, not enforced, because a manufacturer minimum governs */
+  advisory?: boolean
   history: { action: string; actor: string; reason: string; at: number }[]
 }

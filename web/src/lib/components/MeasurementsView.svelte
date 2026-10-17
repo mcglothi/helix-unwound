@@ -1,9 +1,11 @@
 <script lang="ts">
   import { sessionRequest } from '../session'
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
+  import RewPanel from './RewPanel.svelte'
   import { app } from '../state.svelte'
   import { canRecordHardware, captureDraft, hardwareLabel, sameDrivers, type CaptureDrivers, type MeasurementRecord } from '../measurements'
 
+  let overviewHeading = $state<HTMLHeadingElement>()
   let records = $state<MeasurementRecord[]>([])
   let selected = $state<MeasurementRecord | null>(null)
   let draft = $state<CaptureDrivers>({})
@@ -49,6 +51,13 @@
   }
   onMount(() => { void refresh() })
 
+  async function openImported(id: string) {
+    await refresh(id)
+    await tick()
+    overviewHeading?.scrollIntoView({ block: 'center' })
+    overviewHeading?.focus({ preventScroll: true })
+  }
+
   function useCurrent() {
     if (!selected || !confirm('Only use the installed driver list if you have evidence that these exact drivers were installed when this measurement was captured. A later replacement does not update historical measurements.')) return
     draft = Object.fromEntries(selected.channels.map((cid) => [cid, (selected!.current_drivers[cid] ?? []).map((d) => ({ ...d }))]))
@@ -91,10 +100,11 @@
   }
 </script>
 
-<main class="library">
+<div class="library">
   <section class="panel listing">
     <div class="head"><div><h1>Measurements</h1><p class="muted">What was captured, and with which hardware.</p></div>
       <button disabled={busy} onclick={() => refresh()}>Refresh</button></div>
+    <RewPanel onimport={openImported} />
     {#if !records.length}<p class="muted">No measurements yet. Imported REW captures appear here for review.</p>{/if}
     <div class="rows">
       {#each records as record (record.id)}
@@ -110,8 +120,15 @@
     {#if error}<div class="panel error" role="alert">{error} Your form has been retained; refresh to review the latest record.</div>{/if}
     {#if selected}
       <div class="panel overview">
-        <div class="head"><h2>{selected.name}</h2><span class="badge" class:eligible={selected.optimizable}>{hardwareLabel(selected.status)}</span></div>
+        <div class="head"><h2 bind:this={overviewHeading} tabindex="-1">{selected.name}</h2><span class="badge" class:eligible={selected.optimizable}>{hardwareLabel(selected.status)}</span></div>
         <p class="muted">{date(selected.taken_at)} · {selected.kind} · {selected.source || 'Source not recorded'}</p>
+        {#if selected.import_provenance?.provider === 'REW'}
+          <details><summary>REW source details</summary>
+            <p>Source date: {selected.import_provenance.summary?.date || 'Not provided'} (timezone not established)</p>
+            <p>{selected.import_provenance.points} points · smoothing {selected.import_provenance.smoothing}</p>
+            <p class="source-id">Capture ID: {selected.import_provenance.summary?.uuid}</p>
+          </details>
+        {/if}
         {#if selected.status_reason}<p>{selected.status_reason}</p>{/if}
         <p>{selected.optimizable ? 'Hardware and capture-time tune are recorded for assisted tuning.' :
           !selected.has_tune ? 'Capture-time tune is unknown. This capture cannot support assisted tuning yet.' :
@@ -171,13 +188,15 @@
       </details>
     {/if}
   </section>
-</main>
+</div>
 
 <style>
   .library { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: var(--gap); padding: var(--gap); max-width: 1500px; margin: auto; }
   .listing, .overview, .evidence, .details, .error { padding: 18px; }
   .detail, .rows, form { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .source-id { overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
   .listing { align-self: start; }
+  .rows { max-height: min(45dvh, 520px); overflow-y: auto; padding: 2px; }
   h1, h2 { margin: 0; } h1 { font-size: 23px; } h2 { font-size: 18px; }
   p { line-height: 1.5; }
   .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

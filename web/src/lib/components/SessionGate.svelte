@@ -52,7 +52,7 @@
   {@render children()}
 {:else}
   <main class="access panel">
-    <h1>HelixTune</h1>
+    <h1>Helix Unwound</h1>
     <p>Open this workstation from the engine computer with <code>helixtune open</code>.</p>
     <p class="muted">You can also enter its owner credential below. Agent credentials work through MCP and the API.</p>
     <form onsubmit={submit}>

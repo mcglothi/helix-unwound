@@ -132,7 +132,7 @@ def _first(fc, fs, highpass: bool) -> FirstOrder:
     return FirstOrder(k / (k + 1), k / (k + 1), a1)
 
 
-def crossover_sections(kind: XoType, slope_db: int, fc: float, fs: float, highpass: bool
+def crossover_sections(kind: XoType, slope_db: int, fc: float, fs: float, highpass: bool, *, pc_tool_q: bool = False
                        ) -> tuple[list[Biquad], list[FirstOrder]]:
     """Return (biquads, first_order_sections) for one HP or LP filter."""
     if slope_db % 6 or not 6 <= slope_db <= 48:
@@ -141,12 +141,16 @@ def crossover_sections(kind: XoType, slope_db: int, fc: float, fs: float, highpa
     sec = _hp2 if highpass else _lp2
     bqs: list[Biquad] = []
     fos: list[FirstOrder] = []
+    # The two-pole Butterworth kernel in captured PC-Tool LR24 uses .707,
+    # not exact sqrt(.5). Keep generic analytical filters ideal by default.
+    def qs(n):
+        return [0.707] if pc_tool_q and n == 2 else _butter_qs(n)
     if kind is XoType.LINKWITZ_RILEY:
         if order % 2:
             raise ValueError("Linkwitz-Riley needs an even order (12/24/36/48 dB)")
         half = order // 2
         for _ in range(2):
-            for q in _butter_qs(half):
+            for q in qs(half):
                 bqs.append(sec(fc, q, fs))
             if half % 2:
                 fos.append(_first(fc, fs, highpass))
@@ -156,7 +160,7 @@ def crossover_sections(kind: XoType, slope_db: int, fc: float, fs: float, highpa
             bqs.append(sec(fc, 0.5, fs))
         return bqs, fos
     if kind is XoType.BUTTERWORTH:
-        for q in _butter_qs(order):
+        for q in qs(order):
             bqs.append(sec(fc, q, fs))
         if order % 2:
             fos.append(_first(fc, fs, highpass))

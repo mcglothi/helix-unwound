@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../state.svelte'
+  import { workstationRequest } from '../http'
   import { canOverwrite, connectionStatus, deviceRequest, type Port, type OverwriteReview } from '../device'
   let { open = $bindable(false) }: { open?: boolean } = $props()
   let dialog: HTMLDialogElement
@@ -10,6 +11,10 @@
   let error = $state('')
   let review = $state<OverwriteReview | null>(null)
   let confirmation = $state('')
+  let storedBackup = $state<{id: string; bytes: number; xml_bytes: number; sha256: string; xml_sha256: string} | null>(null)
+  let sceneName = $state('Stored preset backup')
+  let importedScene = $state('')
+  let importWarnings = $state<string[]>([])
   $effect(() => { if (port !== 'emulator') writes = false })
   const device = $derived(app.status?.device)
   const connected = $derived(!!device && device.kind !== 'none')
@@ -17,7 +22,7 @@
   $effect(() => {
     if (open && !dialog.open) {
       dialog.showModal()
-      review = null; confirmation = ''; writes = false; error = ''
+      review = null; confirmation = ''; writes = false; error = ''; storedBackup = null; importedScene = ''; importWarnings = []
       void refreshPorts()
     }
     if (!open && dialog.open) dialog.close()
@@ -37,6 +42,26 @@
     } catch (e: any) { error = e.message }
     finally { await app.poll(); busy = false }
   }
+  async function backupStored() {
+    busy = true; error = ''; storedBackup = null; importedScene = ''; importWarnings = []
+    try { storedBackup = await workstationRequest('POST', '/api/device/stored-preset/backup') }
+    catch (e: any) { error = e.message }
+    finally { busy = false }
+  }
+  async function importStored() {
+    if (!storedBackup) return
+    busy = true; error = ''
+    try {
+      const result = await workstationRequest<{snapshot: string; warnings: string[]; safety_problems: string[]}>('POST', `/api/backups/stored/${storedBackup.id}/import`, {name: sceneName})
+      importedScene = result.snapshot
+      importWarnings = [...result.warnings, ...result.safety_problems]
+    } catch (e: any) { error = e.message }
+    finally {
+      try { await app.refresh() }
+      catch { error = error || 'Could not refresh the workstation. Check the connection before retrying.' }
+      busy = false
+    }
+  }
   async function prepare() {
     busy = true; error = ''; confirmation = ''
     try { review = await deviceRequest<OverwriteReview>('GET', '/api/device/review') }
@@ -49,7 +74,7 @@
   <div class="head"><h2 id="connection-title">Connection & recovery</h2><button aria-label="Close connection panel" onclick={() => open = false}>Close</button></div>
   <div class="connection-status"><strong>{connectionStatus(app.status)}</strong><span>{device?.model ?? 'Choose a device to begin'}</span></div>
   {#if app.status?.demo}<p class="notice">Demo: only the in-memory emulator is available.</p>
-  {:else}<p class="notice">Physical connections identify the device only. Hardware writes are disabled while captured protocol and parameter rendering are being reconciled. Connecting does not read or back up the current DSP tune.</p>{/if}
+  {:else}<p class="notice">Physical connections allow identification and explicit stored-preset backups. Hardware writes are disabled while captured protocol and parameter rendering are being reconciled. Connecting does not read or back up the current DSP tune.</p>{/if}
   {#if !connected}
     <label>Device<select bind:value={port} disabled={busy}>
       <option value="">Choose a device…</option><option value="emulator">In-memory emulator</option>
@@ -66,6 +91,22 @@
     {#if device?.last_error}<p role="alert">{device.last_error}</p>{/if}
     <p class="muted">Disconnect does not mute or silence a running DSP. To change access mode, disconnect and reconnect.</p>
     <button disabled={busy} onclick={() => act('/api/device/disconnect')}>Disconnect</button>
+    {#if device?.kind === 'serial'}
+      <section class="stored">
+        <h3>Back up the stored preset</h3>
+        <p>Read the saved preset into a local backup. Unsaved DSP changes may differ. This does not load or apply a tune.</p>
+        <button disabled={busy} onclick={backupStored}>Read & back up stored preset</button>
+        {#if storedBackup}
+          <p role="status">Backup saved · {storedBackup.bytes.toLocaleString()} bytes</p>
+          <a href={`/api/backups/stored/${storedBackup.id}`} download>Download .afpx backup</a>
+          <details><summary>Backup details</summary><p>{storedBackup.xml_bytes.toLocaleString()} XML bytes · two matching reads</p><p class="hash">Backup SHA256 {storedBackup.sha256}</p><p class="hash">XML SHA256 {storedBackup.xml_sha256}</p></details>
+          <label>Scene name<input maxlength="120" bind:value={sceneName} disabled={busy} /></label>
+          <button disabled={busy || !sceneName.trim()} onclick={importStored}>Copy backup to a scene</button>
+          {#if importedScene}<p role="status">Scene “{importedScene}” created. It has not been loaded or sent to the DSP.</p>{/if}
+          {#each importWarnings as warning}<p class="muted">{warning}</p>{/each}
+        {/if}
+      </section>
+    {/if}
     {#if device?.writes_enabled}
       <button disabled={busy} onclick={prepare}>Review full overwrite…</button>
       {#if review}
@@ -88,6 +129,10 @@
 <style>
   dialog { width: min(600px, calc(100vw - 32px)); max-height: 85dvh; overflow-y: auto; padding: 24px; box-sizing: border-box; background: var(--panel); color: var(--ink); border: 1px solid var(--line-2); border-radius: var(--radius); box-shadow: 0 24px 80px rgb(0 0 0 / .35); }
   dialog::backdrop { background: rgb(0 0 0 / .55); backdrop-filter: blur(3px); }
+  .stored { margin-block: 18px; padding-block: 14px; border-block: 1px solid var(--line); display: grid; gap: 12px; }
+  .stored h3, .stored p { margin: 0; }
+  .stored a { color: var(--accent-text); }
+  .hash { overflow-wrap: anywhere; font: 12px var(--mono); }
   .head { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
   .connection-status { display: grid; gap: 6px; padding: 16px 0; }
   .connection-status strong { color: var(--accent-text); }

@@ -1,7 +1,7 @@
 # helixTune handoff
 
 Last Updated: 2026-10-17
-Status: ✅ Milestone 11 output setup, routing migration fix and keyboard/mobile navigation complete
+Status: ⚠️ Stored-preset backup implemented; live read-only Mac/DSP validation pending
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -270,6 +270,18 @@ Validation: **287 Python tests passed** locally; **262 passed / 25 skipped** fro
 - Offline audit reconstructed **93 writes / 93 ACKs across30 local capture files**. HP70 LR24, HP70 LR12 and LP400 LR24 matched rendered words within1LSB (18 words each). No byte-exact/generalized hardware compatibility claim.
 - Stored preset XML readback discovered by capture tooling is **stored state, not arbitrary live RAM readback**. Newer stored preset differs from old backups. No preset read/select/store feature enabled by this checkpoint. See `docs/HARDWARE-EVIDENCE.md`.
 - Validation: **331 Python tests** locally (29 new portable capture-structure/quarantine/layout regressions); frontend43, Svelte/TS0 errors/warnings and production build. **306 passed / 25 skipped** from a clean staged Git archive. Old running versions must not use hardware writes.
+
+## Step 1: read-only stored-preset backup (2026-10-17)
+
+⚠️ Implementation ready; **live Mac/DSP validation pending Tim**
+
+- Claude independently approved the prior protocol corrections: 143/143 replayed words within1LSB, 109 exact; falsification with ideal Q failed the expected LR24 cases. He reported the old real-data server stopped with Tim approval. Codex did not stop/restart it.
+- Added exact read allow-list: identify and bounded32/03 stored-memory reads only. Session09, baud0A, slot selection32/01, names32/07, other probes and all physical writes remain blocked. No automatic connection or fallback. Read-only at19200 may not work without a session; this is deliberately left for the live test.
+- Raw frame audit corrected a summary omission: zero-filled request body is NN for name / NN+1 for data, and data replies add a zero trailer. Private replay now checks real request sizes and response frames, not only reconstructed memory.
+- Bounded qCompress/zlib/XML parsing, per-reply bank/address/count/channel checks, two matching reads, complete mode0600/no-overwrite backup files and separate blob/XML hashes. Captured stored memory replays to byte-identical XML; no claim of live RAM or selected-slot backup.
+- Explicit `backup-stored --port ... --output ...` CLI, owner-only API backup/download and separate copy-to-new-scene workflow. No automatic adoption, overwrite, baseline or protection change. UI backup/import warnings remain visible.
+- Native Brave synthetic transport acceptance verified backup, download link and copy-to-scene; active tune and Undo remained unchanged. Test server/tab closed. No real serial port opened or real user state used.
+- Validation: **366 Python tests** locally, including35 new backup cases (one optional private replay); frontend43, Svelte/TS0 errors/warnings and build passed. **340 passed / 26 skipped** from a clean staged Git archive. See `docs/STORED-PRESET-BACKUP.md` for live acceptance instructions and limits.
 
 ## Next tasks
 

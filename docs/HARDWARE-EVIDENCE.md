@@ -27,8 +27,9 @@ Remaining quantization differences are not represented as byte-exact equivalence
 
 ## Hardware write quarantine
 
-Physical transports currently accept only the exact identify request. Other
-transactions fail before resetting buffers or sending bytes, even when a caller
+Physical transports accept exact identify and bounded `32 03` stored-preset
+reads only (see `STORED-PRESET-BACKUP.md`; 19200/session-free access awaits the live test).
+Other transactions fail before resetting buffers or sending bytes, even when a caller
 sets `allow_writes=True`. Engine attachment also refuses non-emulator write-enabled
 clients, and the owner API rejects physical write-enabled connection requests
 before opening a port or replacing the existing connection. The UI keeps physical
@@ -49,8 +50,8 @@ preset includes a name and qCompress XML data. That is promising for a future
 **stored-preset backup/import** workflow. It cannot yet be called a live RAM backup:
 unsaved RAM edits may differ. The stored preset found in the captures is newer
 than the old local backups, so neither those backups nor its timestamp establish
-the exact current RAM tune. No new stored-memory reader or selection/store command
-is enabled in the application by this checkpoint.
+the exact current RAM tune. A bounded stored-memory reader is now available as a separate explicit backup
+action; no session, baud-switch, selection or store command is enabled by it.
 
 The capture notes also show linked PC-Tool edits. The engine does not yet model
 those link groups. Gain quantization, Director interaction, Save&Store/flash writes

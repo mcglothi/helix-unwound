@@ -819,6 +819,21 @@ def create_app(engine: Engine) -> FastAPI:
                 ser.close()
                 raise
 
+    @app.post("/api/device/stored-preset/backup")
+    def backup_stored_preset():
+        return engine.backup_stored_preset()
+
+    @app.get("/api/backups/stored/{backup_id}", dependencies=[Depends(rew_owner)])
+    def download_stored_preset(backup_id: str):
+        return FileResponse(engine.stored_backup_path(backup_id), media_type="application/octet-stream",
+                            filename=f"stored-{backup_id}.afpx", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/backups/stored/{backup_id}/import")
+    def import_stored_preset(backup_id: str, value: SnapshotSave):
+        # Copy to a named scene only; never load/adopt it or relax output protections.
+        with engine._lock:
+            return engine.import_afpx(engine.stored_backup_path(backup_id), name=value.name, overwrite=False)
+
     @app.post("/api/device/disconnect")
     def disconnect():
         engine.detach()

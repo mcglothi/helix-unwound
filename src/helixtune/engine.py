@@ -227,6 +227,39 @@ class Engine:
         if not self.device.writes_enabled:
             raise EngineError("device attached read-only; writes are disabled")
 
+    def backup_stored_preset(self) -> dict:
+        from . import stored_preset
+        with self._lock:
+            if self.demo:
+                raise EngineError("The demo workstation does not contain a hardware stored preset")
+            if self.client is None or self.device.writes_enabled:
+                raise EngineError("Connect read-only before backing up a stored preset")
+            try:
+                preset = stored_preset.read(self.client)
+            except TimeoutError as exc:
+                raise EngineError("No stored-preset reply at the current read-only connection. No session or baud-switch fallback was attempted; 19200-baud access still needs the live test.") from exc
+            except ValueError as exc:
+                raise EngineError(str(exc)) from exc
+            directory = self.data_dir / "backups"
+            directory.mkdir(mode=0o700, exist_ok=True)
+            backup_id = secrets.token_hex(16)
+            try:
+                stored_preset.save(directory / f"stored-{backup_id}.afpx", preset)
+            except OSError as exc:
+                raise EngineError("Could not confirm the stored-preset backup was saved. Check available disk space and permissions before retrying; no tune was adopted.") from exc
+            self._log("owner", "backed up stored preset; current RAM was not read or changed")
+            return {"id": backup_id, "bytes": len(preset.blob), "xml_bytes": len(preset.xml),
+                    "sha256": preset.sha256, "xml_sha256": preset.xml_sha256, "stored_only": True}
+
+    def stored_backup_path(self, backup_id: str) -> Path:
+        import re
+        if not re.fullmatch(r"[0-9a-f]{32}", backup_id):
+            raise EngineError("Invalid stored-backup identifier")
+        path = self.data_dir / "backups" / f"stored-{backup_id}.afpx"
+        if not path.is_file():
+            raise EngineError("Stored backup not found")
+        return path
+
     def _write(self, changes: dict[int, bytes]) -> int:
         ops = mapping.coalesce(changes)
         for addr, data in ops:

@@ -44,8 +44,8 @@ class Client:
         if not payload:
             raise ValueError("empty command")
         from ..emulator import EmulatedDevice
-        if not isinstance(self.t, EmulatedDevice) and payload != commands.identify():
-            raise WritesDisabled("Physical transports are identify-only until captured session and parameter rendering are validated; emulator writes remain available")
+        if not isinstance(self.t, EmulatedDevice) and not commands.is_safe_read(payload):
+            raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
         if payload[0] in (0x04, 0x05):
             raise WritesDisabled("Commands 04/05 are preset-storage operations, not RAM access; unsupported")
         if payload[0] in commands.MUTATING and not self.allow_writes:
@@ -59,6 +59,16 @@ class Client:
 
     def read_ram(self, address: int, length: int) -> bytes:
         return self.transact(commands.read_ram(address, length)).payload
+
+    def read_stored(self, address: int, length: int) -> bytes:
+        request = commands.read_stored(address, length)
+        reply = self.transact(request)
+        name = address == 0 and length == 18
+        expected_length = 5 + length + (0 if name else 1)
+        if (reply.channel != frame.DEFAULT_CHANNEL or len(reply.payload) != expected_length
+                or reply.payload[:5] != request[:5] or (not name and reply.payload[-1] != 0)):
+            raise frame.FrameError("stored-preset reply does not match command, address and requested length")
+        return reply.payload[5:5 + length]
 
     def write_ram(self, address: int, data: bytes) -> frame.Frame:
         payload = commands.write_ram(address, data)

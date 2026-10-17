@@ -61,6 +61,31 @@ def write_ram(address: int, data: bytes) -> bytes:
     return bytes([Cmd.WRITE_RAM, 0, 1]) + _addr(address) + data
 
 
+def read_stored(address: int, length: int) -> bytes:
+    if not isinstance(address, int) or not 0 <= address < 0x10000:
+        raise ValueError("stored-preset address out of range")
+    if not isinstance(length, int) or not 1 <= length <= 128 or address + length > 0x10000:
+        raise ValueError("stored-preset read must contain 1..128 bytes within memory bounds")
+    name = address == 0 and length == 18
+    if address < 18 and not name:
+        raise ValueError("stored-preset name must be read as one 18-byte block")
+    # Captured requests include a receive-sized body, sometimes containing stale
+    # PC-Tool buffer bytes. Match the size, but never send arbitrary buffer data.
+    padding = length if name else length + 1
+    return bytes([0x32, 0x03, address >> 8, address & 0xff, length]) + bytes(padding)
+
+
+def is_safe_read(payload: bytes) -> bool:
+    if payload == identify():
+        return True
+    if len(payload) >= 5 and payload[:2] == b"\x32\x03":
+        try:
+            return payload == read_stored(int.from_bytes(payload[2:4], "big"), payload[4])
+        except ValueError:
+            pass
+    return False
+
+
 @dataclass(frozen=True)
 class DeviceInfo:
     raw: bytes

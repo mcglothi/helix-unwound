@@ -10,6 +10,7 @@ export interface Channel {
   id: string; name: string; role: Role; gain_db: number; mute: boolean; invert: boolean
   delay_ms: number; hp: Crossover | null; lp: Crossover | null; eq: EqBand[]
   mix: Record<string, number>
+  link_group: number
 }
 export interface Tune {
   name: string; device: string; sample_rate: number; master_gain_db: number

@@ -118,3 +118,16 @@ def test_preset_storage_opcodes_remain_blocked_even_on_write_enabled_emulator(op
     with pytest.raises(WritesDisabled, match='preset-storage'):
         Client(device, allow_writes=True).transact(bytes([opcode, 0, 0, 4]))
     assert not device.log
+
+
+def test_824_truncates_toward_zero_like_pc_tool():
+    """Words PC-Tool sent on 2026-10-17 (gain +2 dB; EQ peak 25 Hz +3 dB Q4.3 @96 kHz,
+    stored B2,B1,B0,-A2,-A1). round() gives 0x014248f0 for the gain and is 1 LSB off on
+    several coefficients; truncation toward zero reproduces every captured word."""
+    from helixtune.dsp.filters import EqType, eq_biquad
+    from helixtune.dsp.fixed import word_824
+    assert word_824(10 ** (2 / 20)) == bytes.fromhex('01 42 48 ef')
+    b = eq_biquad(EqType.PEAK, 25.0, 3.0, 4.3, 96000.0)
+    words = b''.join(word_824(v) for v in (b.b2, b.b1, b.b0, -b.a2, -b.a1))
+    assert words == bytes.fromhex('00ffe6b1 fe001528 01000453 ff0014fb 01ffead8')
+    assert word_824(-1e-9) == bytes(4)          # toward zero, not floor (which gives ffffffff)

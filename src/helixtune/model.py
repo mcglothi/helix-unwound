@@ -64,6 +64,10 @@ class Channel(BaseModel):
     eq: list[EqBand] = Field(default_factory=_default_bands)
     # input mix: linear gain from each source input (L, R). {"L": 0.5, "R": 0.5} = mono sum.
     mix: dict[str, float] = Field(default_factory=dict)
+    # PC-Tool link group (.afpx LG); 0 = not linked. Edits to gain, mute, polarity,
+    # crossovers or an EQ band copy that item to every channel in the same group,
+    # as PC-Tool did in the 2026-10-17 captures. Delay is never linked.
+    link_group: int = Field(0, ge=0, le=99)
 
     @field_validator("id")
     @classmethod
@@ -135,3 +139,10 @@ class Tune(BaseModel):
             if ch.id == cid:
                 return ch
         raise KeyError(f"no channel {cid!r}; channels are {CHANNELS}")
+
+    def linked(self, cid: str) -> list[str]:
+        """cid plus every channel sharing its link group, in output order."""
+        group = self.channel(cid).link_group
+        if not group:
+            return [cid.upper()]
+        return [ch.id for ch in self.channels if ch.link_group == group]

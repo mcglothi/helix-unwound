@@ -53,6 +53,21 @@ than the old local backups, so neither those backups nor its timestamp establish
 the exact current RAM tune. A bounded stored-memory reader is now available as a separate explicit backup
 action; no session, baud-switch, selection or store command is enabled by it.
 
-The capture notes also show linked PC-Tool edits. The engine does not yet model
-those link groups. Gain quantization, Director interaction, Save&Store/flash writes
-and the unsupported operation families remain explicit follow-up work.
+## Quantization and link groups (2026-10-17, Claude Code)
+
+- **8.24 quantization truncates toward zero.** Importing the stored 2022 preset, applying
+  the same UI edits PC-Tool made and rendering reproduces all 143 parameter words of
+  captures 04-12 bit-exactly with truncation; `round()` matched 109, floor 115, ceil 89.
+  `dsp/fixed.to_824` now truncates (regression: `test_824_truncates_toward_zero_like_pc_tool`).
+- **Link groups.** `.afpx` `LG` is PC-Tool's link group (0 = unlinked). In the captures an
+  edit on A was written to A and B (LG=2) for EQ bands (the whole edited band), crossovers,
+  gain, mute and polarity; delay was written to A only. Linked channels can still hold
+  different values (A and B have different EQ in the stored preset): PC-Tool copies the
+  edited item, it does not force the channels equal. `Channel.link_group` is imported, the
+  channel/band/crossover/EQ-reset endpoints and MCP tools copy the edited item to linked
+  channels (`?link=false` / `link=False` edits one channel), and the UI shows and can unlink
+  a channel. Whole-tune replacement and proposals set every channel explicitly and are not
+  propagated.
+
+Director interaction, Save&Store/flash writes, master volume, routing and the
+unsupported operation families remain explicit follow-up work.

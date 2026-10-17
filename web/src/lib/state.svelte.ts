@@ -135,8 +135,9 @@ class AppState {
     await this.poll()
   }
 
-  patchChannel(cid: string, fields: Partial<Channel>) {
-    return this.run(api('PATCH', `/api/channels/${cid}`, fields))
+  patchChannel(cid: string, fields: Partial<Channel>, opts: { link?: boolean } = {}) {
+    const q = opts.link === false ? '?link=false' : ''
+    return this.run(api('PATCH', `/api/channels/${cid}${q}`, fields))
   }
   reviewProtection(item: ProtectionConstraint, action: 'confirm' | 'clear', reason: string) {
     return this.run(api('POST', `/api/protections/constraints/${item.id}/review`, {

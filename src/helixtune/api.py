@@ -31,6 +31,11 @@ from .rew import RewClient, RewError
 WEB = Path(__file__).parent / "web"
 
 
+# Channel fields a link group shares (captured: gain, mute, polarity). Name, role,
+# routing and delay stay per channel.
+LINKED_CHANNEL_FIELDS = frozenset({"gain_db", "mute", "invert"})
+
+
 class ChannelPatch(BaseModel):
     mix: dict[str, float] | None = None
     name: str | None = None
@@ -39,6 +44,7 @@ class ChannelPatch(BaseModel):
     mute: bool | None = None
     invert: bool | None = None
     delay_ms: float | None = None
+    link_group: int | None = Field(None, ge=0, le=99)
 
 
 class OutputSetup(BaseModel):
@@ -383,31 +389,51 @@ def create_app(engine: Engine) -> FastAPI:
     def put_tune(t: Tune, request: Request):
         return engine.apply(t, _src(request), "replaced whole tune")
 
+    # Link groups (PC-Tool LG): the edited item is copied to every linked channel, as the
+    # 2026-10-17 captures show. ?link=false edits one channel only (e.g. callers that
+    # already address each channel of a group themselves).
+    def _partners(t, cid: str, link: bool) -> list[str]:
+        return [c for c in t.linked(cid) if c != cid.upper()] if link else []
+
+    def _linked_note(cid: str, link: bool) -> str:
+        others = _partners(engine.tune, cid, link)
+        return f" (linked: {', '.join(others)})" if others else ""
+
     @app.patch("/api/channels/{cid}")
     @agent_allowed
-    def patch_channel(cid: str, p: ChannelPatch, request: Request):
+    def patch_channel(cid: str, p: ChannelPatch, request: Request, link: bool = True):
         fields = p.model_dump(exclude_none=True)
         engine.tune.channel(cid)  # 404 early
+        shared = {k: v for k, v in fields.items() if k in LINKED_CHANNEL_FIELDS}
 
         def f(t):
             ch = t.channel(cid)
             for k, v in fields.items():
                 setattr(ch, k, v)
-        return engine.edit(_src(request), f"{cid.upper()}: {_fmt(fields)}", f)
+            for other in _partners(t, cid, link):
+                for k, v in shared.items():
+                    setattr(t.channel(other), k, v)
+        note = _linked_note(cid, link) if shared else ""
+        return engine.edit(_src(request), f"{cid.upper()}: {_fmt(fields)}{note}", f)
 
     @app.put("/api/channels/{cid}/{which}")
     @agent_allowed
-    async def put_crossover(cid: str, which: Literal["hp", "lp"], request: Request, xo: Crossover | None = None):
+    async def put_crossover(cid: str, which: Literal["hp", "lp"], request: Request, xo: Crossover | None = None,
+                            link: bool = True):
         if not await request.body():
             raise HTTPException(422, "Supply a crossover object or explicit JSON null to bypass")
         engine.tune.channel(cid)
+
+        def f(t):
+            for c in [cid] + _partners(t, cid, link):
+                setattr(t.channel(c), which, xo.model_copy() if xo else None)
         return await run_in_threadpool(engine.edit, _src(request),
-                                       f"{cid.upper()} {which}: {_fmt(xo.model_dump(mode='json')) if xo else 'off'}",
-                                       lambda t: setattr(t.channel(cid), which, xo))
+                                       f"{cid.upper()} {which}: {_fmt(xo.model_dump(mode='json')) if xo else 'off'}"
+                                       f"{_linked_note(cid, link)}", f)
 
     @app.patch("/api/channels/{cid}/eq/{band}")
     @agent_allowed
-    def patch_band(cid: str, band: int, p: BandPatch, request: Request):
+    def patch_band(cid: str, band: int, p: BandPatch, request: Request, link: bool = True):
         if not 1 <= band <= EQ_BANDS:
             raise HTTPException(404, f"band must be 1..{EQ_BANDS}")
         fields = p.model_dump(exclude_none=True)
@@ -417,17 +443,20 @@ def create_app(engine: Engine) -> FastAPI:
             b = t.channel(cid).eq[band - 1]
             for k, v in fields.items():
                 setattr(b, k, v)
-        return engine.edit(_src(request), f"{cid.upper()} band {band}: {_fmt(fields)}", f)
+            for other in _partners(t, cid, link):  # PC-Tool copies the whole edited band
+                t.channel(other).eq[band - 1] = b.model_copy()
+        return engine.edit(_src(request), f"{cid.upper()} band {band}: {_fmt(fields)}{_linked_note(cid, link)}", f)
 
     @app.post("/api/channels/{cid}/eq/reset")
     @agent_allowed
-    def reset_eq(cid: str, request: Request):
+    def reset_eq(cid: str, request: Request, link: bool = True):
         engine.tune.channel(cid)
 
         def f(t):
-            for b in t.channel(cid).eq:
-                b.enabled, b.gain_db = False, 0.0
-        return engine.edit(_src(request), f"{cid.upper()}: EQ reset", f)
+            for c in [cid] + _partners(t, cid, link):
+                for b in t.channel(c).eq:
+                    b.enabled, b.gain_db = False, 0.0
+        return engine.edit(_src(request), f"{cid.upper()}: EQ reset{_linked_note(cid, link)}", f)
 
     @app.patch("/api/master")
     @agent_allowed

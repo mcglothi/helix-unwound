@@ -16,7 +16,7 @@
 
   async function nudge(role: Role, d: number) {
     for (const c of (app.tune?.channels ?? []).filter((c) => c.role === role)) {
-      await app.patchChannel(c.id, { gain_db: Math.round((c.gain_db + d) * 2) / 2 })
+      await app.patchChannel(c.id, { gain_db: Math.round((c.gain_db + d) * 2) / 2 }, { link: false })
     }
   }
   const master = $derived(app.tune?.master_gain_db ?? 0)

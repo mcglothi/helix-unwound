@@ -6,6 +6,8 @@
   import OutputProtection from './OutputProtection.svelte'
 
   const ch = $derived(app.channel)
+  const partners = $derived(ch && ch.link_group
+    ? (app.tune?.channels ?? []).filter((o) => o.link_group === ch.link_group && o.id !== ch.id).map((o) => o.id) : [])
   const ROLES: Role[] = ['tweeter', 'midrange', 'midbass', 'woofer', 'subwoofer', 'fullrange', 'unused']
   const EQT: EqType[] = ['peak', 'low_shelf', 'high_shelf', 'notch', 'allpass']
   const XOT: { v: XoType; l: string }[] = [
@@ -34,6 +36,11 @@
              onchange={(e) => app.patchChannel(ch.id, { name: e.currentTarget.value })} />
       <span class="mono muted">Out {ch.id}</span>
     </header>
+    {#if partners.length}
+      <p class="linknote muted">Linked with {partners.join(', ')}: gain, mute, polarity, crossover and EQ edits apply to
+        {partners.length > 1 ? 'all of them' : 'both'} (delay, name and routing stay separate).
+        <button class="link" onclick={() => app.patchChannel(ch.id, { link_group: 0 })}>Unlink {ch.id}</button></p>
+    {/if}
 
     <div class="row2">
       <label>Role label
@@ -114,6 +121,8 @@
 <style>
   .inspector { padding: 14px; display: flex; flex-direction: column; gap: 12px; height: 100%; overflow: auto; }
   header { display: flex; align-items: center; gap: 10px; }
+  .linknote { margin: 6px 0 0; font-size: 12px; }
+  .linknote .link { padding: 2px 8px; font-size: 12px; margin-left: 6px; }
   .swatch { width: 12px; height: 12px; border-radius: 50%; flex: none; }
   .name { flex: 1; min-width: 0; font-weight: 600; font-size: 16px; background: transparent; border-color: transparent; }
   .name:hover, .name:focus { border-color: var(--line-2); }

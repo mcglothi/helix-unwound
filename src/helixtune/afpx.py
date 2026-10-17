@@ -107,6 +107,10 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
         fils = {int(f.get("FN")) % 100: f for f in oc.findall("Fil")}
         ch.name = "" if cn == 0 else cname
         ch.role = role_for(cname) if cn else Role.UNUSED
+        lg = oc.get("LG", "0")
+        ch.link_group = int(lg) if cn and lg.isdigit() and int(lg) <= 99 else 0
+        if cn and ch.link_group == 0 and lg not in ("0", ""):
+            rep.warnings.append(f"{ch.id}: unsupported link group {lg!r}; imported unlinked")
         ch.invert = oc.get("CINV") == "1"
         ch.mute = oc.get("MT") == "0"  # PROVISIONAL: MT=1 active
         vol = oc.find("Vol")

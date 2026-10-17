@@ -72,10 +72,18 @@ class Client:
             raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
         self.t.write(frame.SYNC_FRAME)
 
+    DRAIN_MAX_BYTES = 4096
+    DRAIN_DEADLINE_S = 0.25
+
     def drain(self) -> bytes:
-        """Discard whatever arrived (e.g. a baud ack truncated by the rate change)."""
+        """Discard whatever arrived (e.g. a baud ack truncated by the rate change).
+        Bounded by bytes and time so a chattering line cannot stall the caller."""
         got = bytearray()
-        while chunk := self.t.read(256):
+        deadline = time.monotonic() + self.DRAIN_DEADLINE_S
+        while len(got) < self.DRAIN_MAX_BYTES and time.monotonic() < deadline:
+            chunk = self.t.read(256)
+            if not chunk:
+                break
             got += chunk
         self.t.reset_input_buffer()
         return bytes(got)

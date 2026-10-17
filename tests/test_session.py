@@ -146,3 +146,45 @@ def test_keepalive_pings_and_marks_a_silent_dsp_uncertain(synthetic_mapping, tmp
     time.sleep(0.15)
     assert engine.device.sync_state == "uncertain" and "keep-alive" in engine.device.last_error
     engine.detach()
+
+
+def test_missed_keepalive_invalidates_baseline_and_stops_incremental_writes(synthetic_mapping, tmp_path):
+    """Codex review P1: after a missed echo, zero incremental 03 traffic until a deliberate full overwrite."""
+    import time
+    from helixtune.engine import Engine
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path, keepalive_s=0.02)
+    dev = EmulatedDevice()
+    engine.attach(Client(dev, allow_writes=True, timeout=0.02), "emulator")
+    engine.push_full("OVERWRITE")
+    assert engine.device.baselined
+    dev.baudrate = LOW                                   # link drops out of sync
+    time.sleep(0.15)
+    assert engine.device.sync_state == "uncertain" and not engine.device.baselined
+    assert engine.applied_image is None and engine.pending_writes > 0
+    before = len(dev.log)
+    result = engine.edit("test", "gain", lambda t: setattr(t.channel("A"), "gain_db", -3.0))
+    assert result.get("writes", 0) == 0
+    assert not [c for c in wire_commands(b"".join(dev.log[before:])) if c[:1] == H("03")]
+    engine.detach()
+
+
+def test_attach_recovers_a_dsp_left_at_high_speed(synthetic_mapping, tmp_path):
+    """Codex review P2: Session.open owns first contact so its baud recovery runs before identify."""
+    from helixtune.engine import Engine
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    dev = EmulatedDevice()
+    dev.device_baud = HIGH
+    engine.attach(Client(dev, allow_writes=True, timeout=0.05), "emulator")
+    assert dev.session_open and engine.device.model
+    engine.detach()
+    assert dev.device_baud == LOW
+
+
+def test_drain_is_bounded_on_a_chattering_line():
+    class Chatter(Recording):
+        def read(self, size): return b"\x55" * size
+    from helixtune.protocol.client import Client as C
+    got = C(EmulatedDevice()).drain()                    # quiet line: returns at once
+    assert got == b""
+    c = C(Chatter())
+    assert len(c.drain()) <= C.DRAIN_MAX_BYTES + 256

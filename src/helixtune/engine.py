@@ -25,7 +25,7 @@ from .devicefile import ParamMap
 from .model import Tune, Role
 from .protocol import commands
 from .protocol.client import Client
-from .protocol.session import Session
+from .protocol.session import Session, SessionError
 
 
 class EngineError(RuntimeError):
@@ -168,24 +168,28 @@ class Engine:
             from .emulator import EmulatedDevice
             if client.allow_writes and not isinstance(client.t, EmulatedDevice):
                 raise EngineError("Physical writes are disabled pending captured-protocol validation; connect read-only or use the emulator")
-            info = client.identify()
-            if info.model_type != commands.PRO_MK2:
-                raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
             session = None
             if client.allow_writes:
-                # Writes need PC-Tool's session: start + high-speed link (captured sequence).
+                # Writes need PC-Tool's session. Session.open owns the first contact: its baud
+                # recovery must run before identify, or a DSP left at high speed is unreachable.
                 # The emulator answers synchronously; real hardware needs PC-Tool's settle times.
                 quick = isinstance(client.t, EmulatedDevice)
                 session = Session(client, lambda baud: setattr(client.t, "baudrate", baud),
                                   **({"sleep": lambda s: None} if quick else {}))
                 try:
-                    session.open()
+                    info = session.open()
+                except SessionError as exc:
+                    raise EngineError(str(exc)) from exc
                 except Exception as exc:
                     try:
                         session.close()
                     except Exception:
                         pass
                     raise EngineError(f"Could not open a DSP session: {exc}") from exc
+            else:
+                info = client.identify()      # read-only: identify only, no session
+                if info.model_type != commands.PRO_MK2:
+                    raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
             self._connection_epoch += 1
             self.client = client
             self.session = session
@@ -212,9 +216,17 @@ class Engine:
                     try:
                         self.session.keepalive()
                     except Exception as exc:
+                        # Same recovery contract as a failed write: no incremental writes until a
+                        # person deliberately overwrites everything. No automatic close/baud/rollback.
+                        self.applied_image = None
+                        self.device.baselined = False
+                        self.pending_writes = len(self.mapping.render(self.tune))
                         self.device.sync_state = "uncertain"
-                        self.device.last_error = f"keep-alive failed: {exc}"
-                        self._log("engine", f"keep-alive failed; device state uncertain ({exc})")
+                        self.device.last_error = (
+                            f"keep-alive failed ({exc}); device state is unknown. Incremental writes are "
+                            "paused. Reconnect and perform a confirmed full overwrite to resynchronize.")
+                        self.revision += 1
+                        self._log("engine", self.device.last_error)
                         return
         threading.Thread(target=loop, name="helix-keepalive", daemon=True).start()
 

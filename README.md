@@ -6,10 +6,13 @@ Open replacement for Audiotec Fischer's Windows-only DSP PC-Tool, for the
 **HELIX DSP PRO MK2**: a headless tuning engine with a web UI (desktop and phone)
 and an MCP server, so a person and an AI agent can tune the same system together.
 
-Status: protocol and parameter map reverse-engineered statically from PC-Tool
-4.80b (see `notes/FINDINGS.md`). **Not yet verified on hardware.** Every
-unverified assumption is marked PROVISIONAL in code; `docs/capture-checklist.md`
-is the plan to confirm them.
+Status (2026-10-17): first PC-Tool USB captures corrected several protocol and
+renderer assumptions. **Physical connections are identify-only; hardware writes
+are disabled** until remaining session/parameter cases are validated. Offline
+editing and emulator tuning remain available. See
+[`docs/HARDWARE-EVIDENCE.md`](docs/HARDWARE-EVIDENCE.md) for verified cases and gaps.
+Older running versions retain the incorrect command handling and must not be used
+for hardware writes.
 
 For ongoing development and review, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
 The visual concept is a double helix unwinding into music notes—freedom and a second
@@ -54,15 +57,16 @@ The parameter map (`DSPPro2.at01`) ships inside the vendor installer and is not
 included here. `serve` finds it in `artifacts/extracted/app/deviceFiles/`,
 `~/.helixtune/`, `$HELIXTUNE_AT01`, or `--at01 PATH`.
 
-State lives in `~/.helixtune/` (`current.json`, `snapshots/`, `safety.json`,
-`events.jsonl`).
+State lives in `~/.helixtune/`; the tune/history/A-B checkpoint is `workstation.json`,
+with a previous-checkpoint recovery copy. See [`docs/SESSION-RECOVERY.md`](docs/SESSION-RECOVERY.md).
 
-If a device update fails, the engine marks its state **uncertain** and pauses
+In emulator write workflows, if an update fails, the engine marks its state **uncertain** and pauses
 incremental writes. The last accepted application tune is retained; later edits
-are staged offline. Review the tune before using **Overwrite DSP…** to send all
-managed parameters again. This does not undo any writes that may already have
+are staged offline. Review the tune before a confirmed full emulator overwrite. Physical overwrites
+remain disabled. This does not undo any writes that may already have
 reached the DSP. A software baseline records completed write transactions, not
-independent hardware readback verification; protocol/ACK semantics remain provisional.
+independent hardware readback verification. Parameter echo ACKs are checked;
+remaining hardware protocol/session semantics are still incomplete.
 
 The header's connection-status button opens **Connection & recovery**. Read-only
 is the default; write connections require a named-tune review and explicit send

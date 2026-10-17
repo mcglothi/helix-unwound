@@ -116,6 +116,7 @@ def cmd_serve(args) -> int:
     from .engine import Engine
 
     eng = Engine.from_param_map(load_at01(find_param_map(args.at01)), Path(args.data).expanduser())
+    eng.keepalive_s = 0.8          # PC-Tool pings every ~0.85 s while a session is open
     print("Owner UI: run 'helixtune open' in another terminal (use matching --data/--port).")
     if args.host not in ("127.0.0.1", "localhost"):
         print("Remote access requires credentials. Use a trusted network or an encrypted tunnel for HTTP.")

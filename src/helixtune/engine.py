@@ -25,6 +25,7 @@ from .devicefile import ParamMap
 from .model import Tune, Role
 from .protocol import commands
 from .protocol.client import Client
+from .protocol.session import Session
 
 
 class EngineError(RuntimeError):
@@ -91,9 +92,12 @@ class Engine:
     revision: int = 0
     proposals: dict = field(default_factory=dict)
     ab: dict = field(default_factory=lambda: {"A": None, "B": None, "active": None})
+    # PC-Tool pings every ~0.85 s inside a session; None disables the pinger (tests).
+    keepalive_s: float | None = None
 
     def __post_init__(self):
         self._lock = threading.RLock()
+        self.session = None
         self._connection_epoch = 0
         self._connection_nonce = secrets.token_hex(16)
         if not self.demo and (self.data_dir / '.helix-unwound-demo.json').exists():
@@ -167,8 +171,25 @@ class Engine:
             info = client.identify()
             if info.model_type != commands.PRO_MK2:
                 raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
+            session = None
+            if client.allow_writes:
+                # Writes need PC-Tool's session: start + high-speed link (captured sequence).
+                # The emulator answers synchronously; real hardware needs PC-Tool's settle times.
+                quick = isinstance(client.t, EmulatedDevice)
+                session = Session(client, lambda baud: setattr(client.t, "baudrate", baud),
+                                  **({"sleep": lambda s: None} if quick else {}))
+                try:
+                    session.open()
+                except Exception as exc:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+                    raise EngineError(f"Could not open a DSP session: {exc}") from exc
             self._connection_epoch += 1
             self.client = client
+            self.session = session
+            self._start_keepalive()
             self.device = DeviceState(kind=kind, port=port, model=info.model_string,
                                       model_type=info.model_type, writes_enabled=client.allow_writes,
                                       sync_state="unsynchronized")
@@ -177,8 +198,34 @@ class Engine:
             self._log("engine", f"attached {kind} {port or ''} ({info.model_string})")
             return self.device
 
+    def _start_keepalive(self) -> None:
+        if self.session is None or not self.keepalive_s:
+            return
+        epoch = self._connection_epoch
+
+        def loop():
+            while True:
+                time.sleep(self.keepalive_s)
+                with self._lock:
+                    if self._connection_epoch != epoch or self.session is None:
+                        return
+                    try:
+                        self.session.keepalive()
+                    except Exception as exc:
+                        self.device.sync_state = "uncertain"
+                        self.device.last_error = f"keep-alive failed: {exc}"
+                        self._log("engine", f"keep-alive failed; device state uncertain ({exc})")
+                        return
+        threading.Thread(target=loop, name="helix-keepalive", daemon=True).start()
+
     def detach(self) -> None:
         with self._lock:
+            session, self.session = self.session, None
+            if session is not None:
+                try:
+                    session.close()          # leave the DSP at 19200, session ended
+                except Exception as exc:
+                    self._log("engine", f"session close failed; DSP may still be at high speed ({exc})")
             client = self.client
             self.client = None
             self._connection_epoch += 1

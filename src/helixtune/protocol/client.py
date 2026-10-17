@@ -40,19 +40,45 @@ class Client:
                     return f
         raise TimeoutError(f"no complete reply frame (got {bytes(buf).hex(' ')})")
 
-    def transact(self, payload: bytes, *, timeout: float | None = None) -> frame.Frame:
+    def _physical(self) -> bool:
+        from ..emulator import EmulatedDevice
+        return not isinstance(self.t, EmulatedDevice)
+
+    def _gate(self, payload: bytes) -> None:
         if not payload:
             raise ValueError("empty command")
-        from ..emulator import EmulatedDevice
-        if not isinstance(self.t, EmulatedDevice) and not commands.is_safe_read(payload):
+        if self._physical() and not commands.is_safe_read(payload):
             raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
         if payload[0] in (0x04, 0x05):
             raise WritesDisabled("Commands 04/05 are preset-storage operations, not RAM access; unsupported")
         if payload[0] in commands.MUTATING and not self.allow_writes:
             raise WritesDisabled(f"command 0x{payload[0]:02x} mutates the device; writes are disabled")
+
+    def transact(self, payload: bytes, *, timeout: float | None = None) -> frame.Frame:
+        self._gate(payload)
         self.t.reset_input_buffer()
         self.t.write(frame.encode_tx(payload))
         return self._read_frame(timeout or self.timeout)
+
+    def send(self, payload: bytes) -> None:
+        """Fire-and-forget (session start/end, baud change): no reply or a truncated one."""
+        self._gate(payload)
+        self.t.reset_input_buffer()
+        self.t.write(frame.encode_tx(payload))
+
+    def send_sync(self) -> None:
+        """The 10 x 42 00 burst PC-Tool sends around every baud change."""
+        if self._physical():
+            raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
+        self.t.write(frame.SYNC_FRAME)
+
+    def drain(self) -> bytes:
+        """Discard whatever arrived (e.g. a baud ack truncated by the rate change)."""
+        got = bytearray()
+        while chunk := self.t.read(256):
+            got += chunk
+        self.t.reset_input_buffer()
+        return bytes(got)
 
     def identify(self) -> commands.DeviceInfo:
         return commands.parse_identify(self.transact(commands.identify()).payload)

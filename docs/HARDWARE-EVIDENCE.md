@@ -82,5 +82,18 @@ Fs constraint as advisory only while the same driver's `hp_min` constraint is no
 `/api/status` and `/api/safety/check` return `advisories`; the UI shows them in the
 `--caution` (base16 yellow) colour.
 
+## Session layer (2026-10-17, emulator-first)
+
+`protocol/session.py` replays PC-Tool's captured sequence. Open: baud recovery at 19200
+(`0A 03`, sync, host high; `0A 2F`, sync, host low - returns a DSP left at high speed),
+identify (PRO MK2 only), `09 01`, `0A 03`, sync, ~0.5 s, host 230400, sync, keep-alive
+check. Idle: keep-alive `02 00 22 b8 00 00 00 00` echoed (engine pinger every 0.8 s under
+`serve`; a missed echo marks the device `uncertain`). Close (also on detach): `09 00`,
+`0A 2F`, sync, ~0.5 s, host 19200. Baud acks are truncated on the wire and are drained, not
+validated. The engine opens a session only for write-enabled attaches; read-only attaches
+send identify only. The emulator models its line rate (frames at the wrong host rate are
+noise) and the captured truncated acks. Physical transports still reject every session byte
+(`Client` gate) - enabling them is a separate, supervised step after the live read test.
+
 Director interaction, Save&Store/flash writes, master volume, routing and the
 unsupported operation families remain explicit follow-up work.

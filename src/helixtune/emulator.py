@@ -26,6 +26,15 @@ def default_identify_payload() -> bytes:
     return bytes(body)
 
 
+def _rate(baud: int) -> str:
+    # FT232R runs 230400 as 230769; both are "high".
+    return "high" if baud >= 200000 else "low"
+
+
+# Truncated acknowledgements exactly as captured (01b-connect-click).
+BAUD_ACKS = {commands.BaudCode.HIGH: bytes.fromhex("43 02 fd 01 0a ff"),
+             commands.BaudCode.LOW: bytes.fromhex("43 02 fd 01 0a fe 00 00 00 00 00")}
+
 KEEPALIVE = 0x02
 SESSION = 0x09
 STATUS = 0x1B
@@ -46,6 +55,10 @@ class EmulatedDevice:
         self.stored[:STORED_NAME_LEN] = name
         self.stored[STORED_NAME_LEN:STORED_NAME_LEN + len(stored_blob)] = stored_blob
         self.session_open = False
+        # Line rate: the DSP and the host must agree, or bytes arrive as garbage.
+        self.device_baud = commands.LOW_HOST_BAUD
+        self.baudrate = commands.LOW_HOST_BAUD    # host side, set by the session layer
+        self.garbled = 0
         self.ram = bytearray(ram_words * 4)  # 32-bit SigmaDSP words, byte-addressed by word*4
         self.baud_code: int | None = None
         self._out = bytearray()
@@ -57,7 +70,19 @@ class EmulatedDevice:
 
     def write(self, data: bytes) -> int:
         self.log.append(bytes(data))
+        if bytes(data) == frame.SYNC_FRAME:
+            return len(data)           # resync burst; sent at either rate around a switch
+        if _rate(self.baudrate) != _rate(self.device_baud):
+            self.garbled += 1          # wrong line rate: the DSP sees noise and stays silent
+            return len(data)
         req, _ = frame.decode_tx(bytes(data))
+        if req.payload[:1] == bytes([commands.Cmd.SET_BAUD]) and len(req.payload) == 2:
+            # Captured acks are truncated by the rate change; then the DSP switches.
+            self._out += BAUD_ACKS.get(req.payload[1], b"")
+            self.baud_code = req.payload[1]
+            self.device_baud = (commands.HIGH_HOST_BAUD if req.payload[1] == commands.BaudCode.HIGH
+                                else commands.LOW_HOST_BAUD)
+            return len(data)
         reply = self._handle(req.payload)
         if reply is not None:  # session start/end is not answered on the wire
             self._out += frame.encode_rx(reply, channel=req.channel)

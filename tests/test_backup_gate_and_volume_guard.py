@@ -7,6 +7,8 @@ from helixtune.engine import Engine, EngineError
 from helixtune.mapping import PROTECTED_PATTERN
 from helixtune.protocol import commands
 from helixtune.protocol.client import Client, WritesDisabled
+from helixtune.dsp.filters import EqType, XoType
+from helixtune.model import Crossover, EqBand
 
 
 class Physical:
@@ -138,3 +140,71 @@ def test_cli_serve_flag_defaults_off(monkeypatch, synthetic_mapping, tmp_path):
     assert cli.main(["serve", "--data", str(tmp_path)]) == 0
     assert cli.main(["serve", "--data", str(tmp_path), "--allow-physical-writes"]) == 0
     assert [e.physical_writes_allowed for e in engines] == [False, True]
+
+
+def _physical_engine(synthetic_mapping, tmp_path):
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    engine.physical_writes_allowed = True
+    port = PhysicalDsp()
+    engine.attach(Client(port, allow_writes=True, physical_session=True, timeout=0.05), "serial", "x")
+    return engine, port
+
+
+def _param_writes(port, since=0):
+    from helixtune.protocol.session import wire_commands
+    return [c for c in wire_commands(b"".join(port.dev.log[since:])) if c[:1] == b"\x03"]
+
+
+@pytest.mark.parametrize("change", [
+    lambda t: setattr(t.channel("A"), "hp", Crossover(type=XoType.BESSEL, slope_db=24, freq_hz=60)),
+    lambda t: setattr(t.channel("A"), "hp", Crossover(type=XoType.LINKWITZ_RILEY, slope_db=36, freq_hz=60)),
+    lambda t: setattr(t.channel("A"), "lp", Crossover(type=XoType.BUTTERWORTH, slope_db=12, freq_hz=2000)),
+    lambda t: t.channel("A").eq.__setitem__(0, EqBand(enabled=True, type=EqType.LOW_SHELF, freq_hz=80, gain_db=3, q=0.7)),
+])
+def test_unverified_settings_send_zero_parameter_writes_to_a_real_dsp(synthetic_mapping, tmp_path, quick_session, change):
+    engine, port = _physical_engine(synthetic_mapping, tmp_path)
+    t = engine.tune.model_copy(deep=True)
+    change(t)
+    engine.tune = t
+    review = engine.overwrite_review()
+    assert review["physical"] and review["ineligible"]
+    before = len(port.dev.log)
+    with pytest.raises(EngineError, match="not verified against PC-Tool"):
+        engine.push_full("OVERWRITE")
+    assert _param_writes(port, before) == [] and not engine.device.baselined
+    engine.detach()
+
+
+def test_provisional_master_is_never_written_to_a_real_dsp(synthetic_mapping, tmp_path, quick_session):
+    engine, port = _physical_engine(synthetic_mapping, tmp_path)
+    assert engine.overwrite_review()["excluded"]
+    engine.push_full("OVERWRITE")
+    master = synthetic_mapping.master
+    covered = lambda c: int.from_bytes(c[3:5], "big") <= master < int.from_bytes(c[3:5], "big") + (len(c) - 5) // 4
+    assert _param_writes(port) and not [c for c in _param_writes(port) if covered(c)]
+    before = len(port.dev.log)
+    result = engine.edit("test", "master", lambda t: setattr(t, "master_gain_db", -6.0))
+    assert result["writes"] == 0 and _param_writes(port, before) == []          # baseline excludes it
+    with pytest.raises(EngineError, match="not verified"):
+        engine.edit("test", "bessel", lambda t: setattr(t.channel("B"), "hp", Crossover(type=XoType.BESSEL, slope_db=12, freq_hz=80)))
+    assert engine.tune.channel("B").hp is None and _param_writes(port, before) == []
+    engine.detach()
+
+
+def test_emulator_still_models_master_and_every_filter(synthetic_mapping, tmp_path):
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    dev = EmulatedDevice()
+    engine.attach(Client(dev, allow_writes=True, timeout=0.05), "emulator")
+    engine.tune.channel("A").hp = Crossover(type=XoType.BESSEL, slope_db=24, freq_hz=60)
+    review = engine.overwrite_review()
+    assert not review["physical"] and review["ineligible"] == [] and review["excluded"] == []
+    assert engine.push_full("OVERWRITE") > 0
+    assert bytes(dev.ram[synthetic_mapping.master * 4: synthetic_mapping.master * 4 + 4]) != bytes(4)
+    engine.detach()
+
+
+def test_status_reports_the_physical_write_capability(synthetic_mapping, tmp_path):
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    assert engine.status()["physical_writes_allowed"] is False
+    engine.physical_writes_allowed = True
+    assert engine.status()["physical_writes_allowed"] is True

@@ -260,7 +260,8 @@ class Engine:
                                             'boot': self._connection_nonce}),
                     'revision': self.revision, 'connection_epoch': self._connection_epoch,
                     'tune_name': self.tune.name, 'device': dict(self.device.__dict__),
-                    'problems': self._check(self.tune), 'parameter_count': len(self.mapping.render(self.tune))}
+                    'problems': self._check(self.tune), 'parameter_count': len(self.mapping.render(self.tune)),
+                    **self._physical_scope(self.tune)}
 
     def push_full(self, confirm: str, expected_context: str | None = None) -> int:
         """Overwrite every managed parameter on the device with the current tune.
@@ -279,7 +280,7 @@ class Engine:
                 raise SafetyRejected(problems)
             img = self.mapping.render(tune)
             self._persist_protections(tune)
-            n = self._write_image(img, full=True)
+            n = self._write_image(img, tune=tune, full=True)
             self._log("engine", "full push to device", n)
             return n
 
@@ -306,7 +307,9 @@ class Engine:
                 preset = stored_preset.backup(self.client, lambda baud: setattr(transport, "baudrate", baud),
                                               **({"sleep": lambda s: None} if quick else {}))
             except TimeoutError as exc:
-                raise EngineError("The DSP stopped answering during the stored-preset backup. The session was closed; nothing was written. Check the cable and retry.") from exc
+                raise EngineError("The DSP stopped answering during the stored-preset backup. Nothing was written. "
+                                  "Session cleanup was attempted; if the DSP stays silent, the next connection's "
+                                  "baud recovery or a power cycle returns it to 19200.") from exc
             except (ValueError, SessionError) as exc:
                 raise EngineError(str(exc)) from exc
             directory = self.data_dir / "backups"
@@ -335,14 +338,32 @@ class Engine:
             self.client.write_ram(addr, data)
         return len(ops)
 
-    def _write_image(self, img: dict[int, bytes], *, full: bool = False) -> int:
+    def _is_physical(self) -> bool:
+        from .emulator import EmulatedDevice
+        return self.client is not None and not isinstance(self.client.t, EmulatedDevice)
+
+    def _physical_scope(self, tune: Tune) -> dict:
+        physical = self._is_physical()
+        return {"physical": physical,
+                "excluded": ["master gain (GAIN1: role not captured)"] if physical else [],
+                "ineligible": mapping.physical_problems(tune) if physical else []}
+
+    def _write_image(self, img: dict[int, bytes], *, tune: Tune, full: bool = False) -> int:
         """Only a completely acknowledged update establishes a software baseline.
 
         A timeout may mean a write landed but its reply was lost. Do not retry a
         partial diff or claim rollback: stop incremental writes until a person
         deliberately overwrites the managed parameters again.
+
+        On a real DSP only capture-verified settings are sent, and provisional parameters are
+        excluded from the image, so the baseline and every later diff cover verified words only.
         """
         self._require_writable()
+        if self._is_physical():
+            problems = mapping.physical_problems(tune)
+            if problems:
+                raise EngineError("Not sent to the DSP: " + "; ".join(problems) + ". Nothing was written.")
+            img = {a: w for a, w in img.items() if a not in self.mapping.provisional}
         blocked = sorted(set(img) & self.mapping.protected)
         if blocked:
             raise EngineError("refusing to write Director/remote volume parameters "
@@ -386,7 +407,7 @@ class Engine:
             self._persist_protections(new)
             writes = 0
             if self.client is not None and self.device.writes_enabled and self.device.baselined:
-                writes = self._write_image(img)
+                writes = self._write_image(img, tune=new)
             else:
                 self.pending_writes = len(mapping.diff(self.applied_image, img))
             self.history.append(self.tune)
@@ -455,7 +476,7 @@ class Engine:
         self._persist_protections(t)
         writes = 0
         if self.client is not None and self.device.writes_enabled and self.device.baselined:
-            writes = self._write_image(img)
+            writes = self._write_image(img, tune=t)
         else:
             self.pending_writes = len(mapping.diff(self.applied_image, img))
         self.history = (self.history + [self.tune])[-200:] if history is None else history
@@ -988,6 +1009,7 @@ class Engine:
     def status(self) -> dict:
         return {
             "demo": self.demo,
+            "physical_writes_allowed": self.physical_writes_allowed,
             "connection_epoch": self._connection_epoch,
             "device": self.device.__dict__,
             "tune_name": self.tune.name,

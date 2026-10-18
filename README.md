@@ -7,12 +7,12 @@ Open replacement for Audiotec Fischer's Windows-only DSP PC-Tool, for the
 and an MCP server, so a person and an AI agent can tune the same system together.
 
 Status (2026-10-17): first PC-Tool USB captures corrected several protocol and
-renderer assumptions. **Physical connections are read-only; hardware writes
-are disabled** until remaining session/parameter cases are validated. Offline
-editing and emulator tuning remain available. See
-[`docs/HARDWARE-EVIDENCE.md`](docs/HARDWARE-EVIDENCE.md) for verified cases and gaps.
-An explicit [stored-preset backup](docs/STORED-PRESET-BACKUP.md) is implemented;
-Mac/DSP access at 19200 without a session still needs live validation.
+renderer assumptions. **Physical connections are read-only by default.** Supervised
+write sessions require `helixtune serve --allow-physical-writes` and are limited to
+capture-verified settings (see [`docs/HARDWARE-EVIDENCE.md`](docs/HARDWARE-EVIDENCE.md)
+for verified cases and gaps). Offline editing and emulator tuning remain available.
+An explicit [stored-preset backup](docs/STORED-PRESET-BACKUP.md) is implemented and was
+validated live on 2026-10-18.
 Older running versions retain the incorrect command handling and must not be used
 for hardware writes.
 

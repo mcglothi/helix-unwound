@@ -33,6 +33,30 @@ PROTECTED_PATTERN = (r"^URC_FUNCTION_(MASTER|SUB|OPTO|AUX)VOLUME"
                      r"|VOLUMEURC_SLEW_MODE$|^MASTERVOLUME(OPTOOUT)?_SLEW_MODE$")
 
 
+# Filter combinations whose rendered words matched PC-Tool's captured writes bit-exactly
+# (2026-10-17/18). Writes to a real DSP are limited to these; emulator/offline modelling keeps
+# every type. Known mismatches: Bessel and LR36 (capture 23). Everything else is uncaptured.
+PHYSICAL_VERIFIED_XO = {
+    "hp": {(F.XoType.LINKWITZ_RILEY, 12), (F.XoType.LINKWITZ_RILEY, 24),
+           (F.XoType.BUTTERWORTH, 6), (F.XoType.BUTTERWORTH, 12), (F.XoType.BUTTERWORTH, 18)},
+    "lp": {(F.XoType.LINKWITZ_RILEY, 12), (F.XoType.LINKWITZ_RILEY, 24)},
+}
+PHYSICAL_VERIFIED_EQ = {F.EqType.PEAK}
+
+
+def physical_problems(tune: Tune) -> list[str]:
+    """Settings that may not be written to a real DSP because PC-Tool's encoding is unverified."""
+    out: list[str] = []
+    for ch in tune.channels:
+        for label, xo in (("hp", ch.hp), ("lp", ch.lp)):
+            if xo is not None and (xo.type, xo.slope_db) not in PHYSICAL_VERIFIED_XO[label]:
+                out.append(f"{ch.id} {label.upper()} {xo.type.value} {xo.slope_db} dB/oct is not verified against PC-Tool")
+        for n, band in enumerate(ch.eq, 1):
+            if band.enabled and band.type not in PHYSICAL_VERIFIED_EQ:
+                out.append(f"{ch.id} EQ band {n} type {band.type.value} is not verified against PC-Tool")
+    return out
+
+
 class MappingError(ValueError):
     pass
 
@@ -93,6 +117,12 @@ def channel_addrs(pm: ParamMap, idx: int) -> ChannelAddrs:
 
 class DeviceMapping:
     protected: frozenset[int] = frozenset()
+
+    @property
+    def provisional(self) -> frozenset[int]:
+        """Rendered for the emulator but never written to a real DSP: GAIN1's role as master
+        gain is a naming guess, not captured."""
+        return frozenset({self.master})
 
     def __init__(self, pm: ParamMap):
         self.pm = pm

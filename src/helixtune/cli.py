@@ -81,7 +81,8 @@ def cmd_backup_stored(args) -> int:
             preset = stored_preset.backup(client, lambda baud: setattr(transport, "baudrate", baud))
         stored_preset.save(target, preset)
     except TimeoutError:
-        print("Read timed out; the session was closed and the DSP returned to 19200. Nothing was written.", file=sys.stderr)
+        print("Read timed out. Nothing was written. Session cleanup was attempted; if the DSP stays silent, "
+              "the next connection's baud recovery or a power cycle returns it to 19200.", file=sys.stderr)
         return 1
     except SessionError as exc:
         print(f"Stored-preset backup failed: {exc}", file=sys.stderr)

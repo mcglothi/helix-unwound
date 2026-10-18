@@ -1,91 +1,82 @@
-# Read-only stored-preset backup — step 1
+# Stored-preset backup
 
-Last Updated: 2026-10-17
-Status: implemented and tested offline; **Mac/DSP access at 19200 without a session
-is not yet live-validated**. No automatic hardware connection is performed.
+Last Updated: 2026-10-18
+Status: implemented, tested offline, and **live-validated on the truck's DSP 2026-10-18**
+(Mac, FT232R). No automatic hardware connection is performed.
 
 ## What it does
 
-The physical command allow-list accepts only exact identify (`08`) and bounded
-stored-memory reads (`32 03 PP OO NN` with a zero-filled body, within the 64 KiB
-address space). The name is one18-byte read at address0; data reads start at18 or
-later, with1–128 bytes per request. Captured request body sizes are NN for the name
-and NN+1 for compressed data; the implementation zeros those buffers rather than
-replaying incidental PC-Tool buffer contents. Compressed-data replies carry NN
-bytes plus one zero trailer, which is validated and excluded from the data.
-It does not admit other `32` subcommands, including slot selection, or `09`
-session commands, `0A` baud switching, RAM writes, preset stores or unknown probes.
-Physical write enable remains blocked. The OS serial port is opened at 19200 8N1.
+The backup reproduces PC-Tool's own sequence, which the live test showed the DSP requires:
 
-The reader compares two full reads of the exposed stored preset, validates reply
-command/page/offset/length/channel, and extracts the first complete qCompress
-stream starting at offset 18. The four-byte uncompressed-length header is bounded
-at 4 MiB. Decompression stops at zlib EOF, ignoring trailing memory bytes; the final
-request can necessarily read up to 127 bytes beyond that EOF. Compressed reads
-cannot run past 64 KiB and both passes share a 60-second deadline, in addition to
+1. PC-Tool's session open: baud recovery at 19200, identify (must be a PRO MK2), `09 01`,
+   switch to 230400 with sync bursts (0.1 s pause after each), keep-alive echo.
+2. `32 01 06 00` (stored-memory selection). The DSP must echo it; otherwise nothing is read.
+   Without it the DSP did not answer `32 03` at all, at 19200 or inside a session. Once
+   sent, the selection persisted. The meaning of `06` is not decoded, so only this exact
+   payload is ever sent.
+3. Two full bounded reads of stored memory (`32 03 PP OO NN`), compared for equality.
+4. Session close (`09 00`, `0A 2F`, sync, host 19200), always attempted, also after errors.
+
+On a physical port the `Client` gate admits identify and bounded `32 03` reads at any time,
+and the session commands above only inside `Client.stored_backup_mode()`. Parameter writes
+(`03`), preset-storage commands (`04`/`05`) and every other `32` subcommand stay refused.
+The OS serial port is opened at 19200 8N1 with a 0.05 s read timeout.
+
+Read format: the name is one 18-byte read at address 0; data reads start at 18 or later,
+1-128 bytes per request. Captured request body sizes are NN for the name and NN+1 for
+compressed data; the implementation zeros those buffers rather than replaying incidental
+PC-Tool buffer contents. Compressed-data replies carry NN bytes plus one zero trailer, which
+is validated and excluded. The reader validates reply command/page/offset/length/channel and
+extracts the first complete qCompress stream at offset 18. The uncompressed-length header is
+bounded at 4 MiB; decompression stops at zlib EOF (the final request can read up to 127
+bytes beyond it). Reads cannot pass 64 KiB and both passes share a 60-second deadline, plus
 per-request timeouts. Invalid/non-UTF-8 XML, DTD/entity declarations, wrong device type,
 length mismatches, truncation and source changes refuse a backup.
 
-Two matching reads detect observed changes; they do not establish an atomic
-hardware snapshot. No preset is selected first. The file is the **stored XML
-exposed by the device**, not a verified copy of current RAM or necessarily the
+Two matching reads detect observed changes; they do not establish an atomic snapshot. The
+file is the **stored XML exposed by the device**, not current RAM or necessarily the
 currently selected listening preset. Unsaved RAM edits may differ.
 
-## CLI: explicit live test when Tim is ready
+## CLI
 
-Do not start this test until the Mac is connected to the DSP and Tim authorizes it.
-Close other DSP-control software and disconnect any workstation connection first.
-Use `helixtune ports` to inspect available ports without opening them. Then choose
-a fresh output file; the destination parent must already exist:
+Only with the Mac connected to the DSP and Tim's go-ahead. Close PC-Tool and disconnect any
+workstation connection first. Keep the audio low and read the Director's Digital Volume
+before and after (see the 2026-10-18 incident in HARDWARE-EVIDENCE). `helixtune ports`
+lists ports without opening them. Choose a fresh output file in an existing directory:
 
 ```bash
-mkdir -p "$HOME/helix-backups"
 uv run helixtune backup-stored --port /dev/cu.usbserial-REPLACE_ME \
-  --output "$HOME/helix-backups/stored-before-mac-test.afpx"
+  --output "$HOME/helix-backups/stored-YYYY-MM-DD.afpx"
 ```
 
-No parameter map or existing workstation data directory is needed for this CLI.
-It identifies the PRO MK2, reads stored memory twice, closes the transport and
-publishes a complete mode-0600 file without replacing an existing destination.
-It prints both backup and decompressed-XML SHA256 values. Compressed bytes can
-differ from a recompressed capture export; compare **decompressed XML bytes**.
+It prints the backup and decompressed-XML SHA256 values and publishes a mode-0600 file
+without replacing an existing destination. Compressed bytes can differ from a recompressed
+capture export; compare **decompressed XML bytes**. Opening a session causes a ~1 s audio
+dropout, which is expected.
 
-If there is no reply at 19200, the attempt stops. It will not start a session,
-change baud, select a slot or retry through broader commands. The open question
-is whether a session or faster baud is necessary on this device; a timeout is
-information to bring back, not a reason to lift the write quarantine. Do not
-launch older app versions to work around a refusal.
-
-Acceptance for an unchanged stored preset: identify as PRO MK2, only the allowed
-read payloads on the wire, backup XML byte-identical to the capture-derived stored
-XML, no active workstation adoption or device changes. If the stored preset has
-changed since capture, compare with a fresh independent backup instead of assuming
-the old file must match.
+On a timeout or protocol mismatch nothing is written to the DSP and no file is published.
+Session cleanup is attempted; if it could not reach the DSP, the next connection's baud
+recovery (or a power cycle) returns it to 19200. The command does not retry through
+broader commands.
 
 ## Workstation UI
 
-After an explicit read-only connection, **Connection & recovery → Read & back up
-stored preset** saves an immutable `.afpx` under the workstation `backups/`
-directory. Download is owner-only. A separate **Copy backup to a scene** action
-uses a new scene name and never replaces an existing scene, adopts the tune,
-creates a device baseline or relaxes output protections. Import warnings and
-safety problems remain visible. Unmodeled preset fields stay in the raw backup;
-a modeled scene is not a promise of complete preset fidelity.
-
-These actions use owner authentication; agents cannot initiate a read, download
-private backups or import them through these endpoints. Protocol mismatch/timeouts
-leave the connection read-only, with no automatic session/baud fallback.
+After an explicit read-only connection, **Connection & recovery -> Read & back up stored
+preset** runs the same sequence and saves an immutable `.afpx` under the workstation
+`backups/` directory. Download is owner-only. A separate **Copy backup to a scene** action
+uses a new scene name and never replaces an existing scene, adopts the tune, creates a device
+baseline or relaxes output protections. Import warnings and safety problems remain visible.
+Agents cannot initiate a read, download private backups or import them.
 
 ## Validation
 
-Synthetic transports cover exact request allow-listing, fragmented replies,
-address/length/channel mismatch, bounded decompression and memory exhaustion,
-source changes, exclusive files, API ownership, separate scene creation and CLI
-behavior. Optional private-capture replay reconstructs stored memory from the
-reconnect pcaps checks actual padded request sizes and reply frames, and compares the resulting XML byte for byte with the extracted
-`.afpx`; it skips when private tooling/data is absent. This replay does not validate
-Mac serial timing or session-free reads at 19200.
+Synthetic transports cover the exact command allow-list (including refusal outside backup
+mode), the selection echo, fragmented replies, address/length/channel mismatch, bounded
+decompression, source changes, a silent DSP (one read attempt, no retry, session closed, no
+writes), exclusive files, API ownership, separate scene creation and the CLI wire order. The
+emulator models the hardware: `32 03` is silent until `32 01 06 00`, then the selection
+persists. Optional private-capture replay compares reconstructed stored memory with the
+extracted `.afpx` byte for byte (skips without private data).
 
-Native Brave acceptance used a temporary synthetic transport: backup → download
-link → copy to scene, with the active tune and Undo depth unaffected. The temporary
-server/tab were closed afterward. No hardware or real user state was accessed.
+Live 2026-10-18: backup XML (30,852 bytes) byte-identical to the 2026-10-17 capture-derived
+preset, and identical again after a supervised gain write.

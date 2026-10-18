@@ -323,7 +323,12 @@ partial-open/close failures on hardware. Physical transports still reject every 
    2026-10-18; off by default). With it, a write-enabled serial connection may carry identify,
    bounded stored reads, PC-Tool's session/keep-alive, `32 01 06 00` and `03` writes only.
    `04`/`05`/`13`/`17`/`1b` and other `32` commands stay refused, and the Director-volume guard
-   and reconnect rule apply. Not yet used on hardware. Start/end every truck test by reading the
+   and reconnect rule apply. Before any `03` byte, unverified settings are refused
+   (`mapping.physical_problems`) and the provisional master is excluded from the physical image
+   and baseline. The UI enables the write checkbox for serial ports only when the server reports
+   `physical_writes_allowed`; the existing context-bound review + typed OVERWRITE is the
+   first-write confirmation and shows port, exclusions, refusals and live consequences.
+   Not yet used on hardware. Start/end every truck test by reading the
    Director's Digital Volume.
 2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
@@ -349,7 +354,7 @@ These are review recommendations, not approval for every proposed product featur
 
 ## Known limits at handoff
 
-- First PC-Tool USB captures now verify selected framing, commands and filter cases; Helix Unwound physical write/session integration remains unvalidated and is disabled. See HARDWARE-EVIDENCE.md.
+- USB captures verify framing, commands and selected filter cases; the session and one supervised gain write were validated live (2026-10-18) with one-off scripts. Engine physical writes exist only behind `serve --allow-physical-writes`, limited to capture-verified settings with the provisional master excluded, and have not yet been used on hardware. See HARDWARE-EVIDENCE.md.
 - “Synchronized” only means all write requests returned responses accepted by the current client. Parameter echo ACK content is now checked; atomicity, safeload and independent readback remain unverified; this is not a hardware-verified tune.
 - No automatic device mute or rollback is attempted after transport failure. Uncertainty can include partially applied filters. User must review and deliberately resynchronize.
 - The network API now enforces owner/agent capabilities, but same-user local processes that can read owner files can assume owner authority. Direct engine/CLI operations are trusted local operations; this is not an OS sandbox.

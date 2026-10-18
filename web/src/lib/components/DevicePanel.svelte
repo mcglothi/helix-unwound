@@ -16,7 +16,8 @@
   let importedScene = $state('')
   let importWarnings = $state<string[]>([])
   let importAdvisories = $state<string[]>([])
-  $effect(() => { if (port !== 'emulator') writes = false })
+  const physicalWrites = $derived(!!app.status?.physical_writes_allowed)
+  $effect(() => { if (port !== 'emulator' && !physicalWrites) writes = false })
   const device = $derived(app.status?.device)
   const connected = $derived(!!device && device.kind !== 'none')
   const ready = $derived(canOverwrite(review, app.status, confirmation))
@@ -76,7 +77,8 @@
   <div class="head"><h2 id="connection-title">Connection & recovery</h2><button aria-label="Close connection panel" onclick={() => open = false}>Close</button></div>
   <div class="connection-status"><strong>{connectionStatus(app.status)}</strong><span>{device?.model ?? 'Choose a device to begin'}</span></div>
   {#if app.status?.demo}<p class="notice">Demo: only the in-memory emulator is available.</p>
-  {:else}<p class="notice">Physical connections allow identification and explicit stored-preset backups. Hardware writes are disabled while captured protocol and parameter rendering are being reconciled. Connecting does not read or back up the current DSP tune.</p>{/if}
+  {:else if physicalWrites}<p class="notice" role="alert">Supervised write mode: this server may send changes to a real DSP. Lower the volume, read the Director’s Digital Volume before and after, and keep PC-Tool closed. Only capture-verified settings are sent.</p>
+  {:else}<p class="notice">Physical connections allow identification and explicit stored-preset backups. Hardware writes are off unless the server is started with --allow-physical-writes. Connecting does not read or back up the current DSP tune.</p>{/if}
   {#if !connected}
     <label>Device<select bind:value={port} disabled={busy}>
       <option value="">Choose a device…</option><option value="emulator">In-memory emulator</option>
@@ -84,7 +86,7 @@
     </select></label>
     <button disabled={busy} onclick={refreshPorts}>Refresh ports</button>
     {#if !ports.length && !app.status?.demo}<p class="muted">No serial ports found. Check power, USB cable and operating-system access, then refresh. The emulator works without hardware.</p>{/if}
-    <label class="check"><input type="checkbox" bind:checked={writes} disabled={busy || port !== 'emulator'} />Allow this workstation to send changes</label>
+    <label class="check"><input type="checkbox" bind:checked={writes} disabled={busy || (port !== 'emulator' && !physicalWrites)} />Allow this workstation to send changes</label>
     <p class="muted">Start read-only to check the connection. Sending changes requires reviewing the workstation tune first.</p>
     <button disabled={!port || busy} onclick={() => act('/api/device/connect', { port, allow_writes: writes })}>{writes ? 'Connect with writes enabled' : 'Connect read-only'}</button>
   {:else}
@@ -116,7 +118,12 @@
         <section class="review">
           <h3>Overwrite {review.device.model ?? review.device.kind}</h3>
           <p>Replace the device’s active settings with <strong>{review.tune_name}</strong>. Save a backup of the existing device tune with the vendor software first.</p>
-          <details><summary>Overwrite details</summary><p>{review.parameter_count} managed parameters will be sent. This operation does not create a backup or write firmware. Completed requests are not independent readback verification.</p></details>
+          {#if review.physical}
+            <p role="alert">Live DSP on {review.device.port}: sound changes immediately. Settings go to the DSP’s working memory, not its stored preset, and stay until PC-Tool reloads a preset. Keep the volume low.</p>
+            {#each review.excluded ?? [] as item}<p class="muted">Not sent: {item}</p>{/each}
+            {#each review.ineligible ?? [] as item}<p role="alert">Cannot send: {item}</p>{/each}
+          {/if}
+          <details><summary>Overwrite details</summary><p>{review.parameter_count} managed parameters{review.physical ? ' (minus the exclusions above)' : ''} will be sent. This operation does not create a backup or write firmware. Completed requests are not independent readback verification.</p></details>
           <p class="muted">If this tune or connection changes, review it again before sending.</p>
           {#each review.problems as problem}<p role="alert">{problem}</p>{/each}
           {#if review.revision !== app.status?.revision || review.connection_epoch !== app.status?.connection_epoch}<p role="alert">Workstation changed. Review the overwrite again.</p>{/if}

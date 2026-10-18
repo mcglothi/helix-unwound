@@ -18,3 +18,8 @@ it('allows deliberate recovery from uncertainty but refuses in-flight writes', (
   expect(canOverwrite(review, {...status, device: {...status.device, sync_state:'uncertain'}}, 'OVERWRITE')).toBe(true)
   expect(canOverwrite(review, {...status, device: {...status.device, sync_state:'applying'}}, 'OVERWRITE')).toBe(false)
 })
+it('refuses a physical overwrite with unverified settings or after a missed keep-alive', () => {
+  expect(canOverwrite({...review, physical: true, ineligible: ['A HP bessel 24 dB/oct is not verified']}, status, 'OVERWRITE')).toBe(false)
+  expect(canOverwrite({...review, physical: true, ineligible: [], excluded: ['master gain']}, status, 'OVERWRITE')).toBe(true)
+  expect(canOverwrite(review, {...status, device: {...status.device, needs_reconnect: true}}, 'OVERWRITE')).toBe(false)
+})

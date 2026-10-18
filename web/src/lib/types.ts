@@ -21,6 +21,8 @@ export interface Device {
   writes_enabled: boolean; baselined: boolean
   sync_state: 'disconnected' | 'unsynchronized' | 'applying' | 'synchronized' | 'uncertain'
   last_error: string | null
+  /** a missed keep-alive: every write is refused until disconnect + reconnect */
+  needs_reconnect?: boolean
 }
 export interface EngineEvent { ts: number; source: string; summary: string; writes: number }
 export interface OutputProtection {
@@ -30,6 +32,8 @@ export interface ProposalInfo { id: string; title: string; kind: string; changes
 export interface ABState { A: string | null; B: string | null; active: 'A' | 'B' | null }
 export interface Status {
   demo: boolean
+  /** server started with --allow-physical-writes (supervised write sessions on a real DSP) */
+  physical_writes_allowed?: boolean
   connection_epoch: number
   device: Device; tune_name: string; revision: number; undo_depth: number; redo_depth?: number
   save_error?: string | null; recovery_notice?: string | null

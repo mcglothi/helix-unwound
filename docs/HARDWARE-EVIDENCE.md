@@ -27,21 +27,26 @@ Remaining quantization differences are not represented as byte-exact equivalence
 
 ## Hardware write quarantine
 
-Physical transports accept exact identify and bounded `32 03` stored-preset
-reads only (see `STORED-PRESET-BACKUP.md`; 19200/session-free access awaits the live test).
-Other transactions fail before resetting buffers or sending bytes, even when a caller
-sets `allow_writes=True`. Engine attachment also refuses non-emulator write-enabled
-clients, and the owner API rejects physical write-enabled connection requests
-before opening a port or replacing the existing connection. The UI keeps physical
-write permission disabled; offline editing and emulator workflows remain available.
-No override switch was added. Older already-running processes retain their old
-implementation until restarted and must not be used for writes.
+Default (no flag): physical transports accept exact identify and bounded `32 03`
+stored-preset reads, plus PC-Tool's session and `32 01 06 00` only inside a stored-preset
+backup (`STORED-PRESET-BACKUP.md`). Other transactions fail before resetting buffers or
+sending bytes, even when a caller sets `allow_writes=True`. Engine attachment refuses
+non-emulator write-enabled clients and the owner API rejects physical write-enabled
+connection requests before opening a port.
 
-This is intentional until session lifecycle/baud handling, master gain, routing,
-first-order writes, other slopes and parameter semantics receive independent
-coverage. Slopes that need more than the captured three-biquad bank per filter
-are refused instead of borrowing another bank; higher-slope layout needs evidence.
-A valid write echo is an acknowledgement, not independent acoustic or RAM readback.
+Opt-in (`serve --allow-physical-writes`, approved by Tim 2026-10-18, not yet used on
+hardware): a write-enabled serial connection may add PC-Tool's session and `03` parameter
+writes; `04`/`05`/`13`/`17`/`1b` and other `32` commands stay refused. Before any `03` byte
+the engine refuses tunes with settings whose encoding is not capture-verified
+(`mapping.physical_problems`: crossovers other than HP LR12/LR24/BW6/BW12/BW18 and LP
+LR12/LR24; EQ types other than peak) and leaves provisional parameters (master gain
+`GAIN1`) out of the physical image, so the baseline and every diff cover verified words only.
+Director volume parameters are always refused, and a missed keep-alive requires reconnect.
+Emulator and offline modelling keep every type and the master.
+
+Slopes that need more than the captured three-biquad bank per filter are refused instead of
+borrowing another bank. A valid write echo is an acknowledgement, not independent acoustic
+or RAM readback.
 
 ## Stored preset is not current RAM
 

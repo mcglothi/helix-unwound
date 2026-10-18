@@ -29,7 +29,7 @@ export interface Toast { id: number; text: string; kind: 'error' | 'info' }
 /** A refused change, kept on screen until dismissed (toasts vanish too quickly to act on). */
 export interface Rejection { reasons: string[] }
 /** Outputs an "Unmute at 0 dB" would touch, with the levels the user is shown. */
-export interface UnmuteReview { cid: string; targets: { id: string; gain_db: number }[] }
+export interface UnmuteReview { cid: string; link: boolean; targets: { id: string; gain_db: number }[] }
 
 class AppState {
   tune = $state<Tune | null>(null)
@@ -155,16 +155,19 @@ class AppState {
     return [ch, ...(ch.link_group ? chans.filter((c) => c.link_group === ch.link_group && c.id !== cid) : [])]
   }
 
-  /** Mute/unmute. Unmuting an output with positive gain is refused by the safety rules, so offer
-   *  a reviewed "Unmute at 0 dB" instead of sending a request that cannot succeed. */
+  /** Mute/unmute. Unmuting goes straight back to the level an output played at before it was
+   *  muted (same connection). Only a level raised while muted, or an unknown one, at positive gain
+   *  needs the reviewed "Unmute at 0 dB", so no request is sent that the safety rules would refuse. */
   toggleMute(cid: string, opts: { link?: boolean } = {}) {
     const ch = this.tune?.channels.find((c) => c.id === cid)
     if (!ch) return
     if (!ch.mute) return this.patchChannel(cid, { mute: true }, opts)
-    const targets = opts.link === false ? [ch] : this.linkedChannels(cid)
-    if (targets.some((c) => c.gain_db > 0)) {
+    const link = opts.link !== false
+    const targets = link ? this.linkedChannels(cid) : [ch]
+    const before = this.status?.unmute_levels ?? {}
+    if (targets.some((c) => c.mute && c.gain_db > 0 && !(c.id in before && c.gain_db <= before[c.id]))) {
       this.rejection = null
-      this.unmuteReview = { cid, targets: targets.map((c) => ({ id: c.id, gain_db: c.gain_db })) }
+      this.unmuteReview = { cid, link, targets: targets.map((c) => ({ id: c.id, gain_db: c.gain_db })) }
       return
     }
     return this.patchChannel(cid, { mute: false }, opts)
@@ -175,7 +178,7 @@ class AppState {
     if (!review) return
     this.unmuteReview = null
     const reviewed = Object.fromEntries(review.targets.map((t) => [t.id, t.gain_db]))
-    const q = review.targets.length === 1 && this.linkedChannels(review.cid).length > 1 ? '?link=false' : ''
+    const q = review.link ? '' : '?link=false'      // the choice made at the click, not re-derived
     return this.run(api('POST', `/api/channels/${review.cid}/unmute-at-zero${q}`, { reviewed_gain_db: reviewed }))
   }
 

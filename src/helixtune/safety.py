@@ -89,8 +89,10 @@ def tighten_outputs(tune: Tune, policy: SafetyPolicy, existing: OutputProtection
 
 
 def check(tune: Tune, policy: SafetyPolicy, previous: Tune | None = None, driver_limits: dict | None = None,
-          protections: OutputProtections | None = None) -> list[str]:
-    """driver_limits: channel -> equipment.DriverLimits from recorded driver specs."""
+          protections: OutputProtections | None = None, unmute_levels: dict[str, float] | None = None) -> list[str]:
+    """driver_limits: channel -> equipment.DriverLimits from recorded driver specs.
+    unmute_levels: output -> the level it was playing at when muted (same connection and
+    routing); unmuting at or below it is a return to a known state, not a jump."""
     problems: list[str] = []
     effective = tighten_outputs(tune, policy, protections, driver_limits)
     if tune.master_gain_db > policy.max_master_gain_db:
@@ -114,7 +116,7 @@ def check(tune: Tune, policy: SafetyPolicy, previous: Tune | None = None, driver
             have = f"{ch.lp.freq_hz:g} Hz" if ch.lp else "none"
             problems.append(f"{ch.id}: low-pass {have} is above the physical output maximum {guard.max_lp_hz:g} Hz")
     if previous is not None:
-        problems += _step_limits(tune, previous, policy)
+        problems += _step_limits(tune, previous, policy, unmute_levels or {})
     return problems
 
 
@@ -136,7 +138,7 @@ def advisories(tune: Tune, policy: SafetyPolicy, driver_limits: dict | None = No
     return out
 
 
-def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy) -> list[str]:
+def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy, unmute_levels: dict[str, float]) -> list[str]:
     out = []
     lim = policy.max_boost_step_db
     if new.master_gain_db - old.master_gain_db > lim:
@@ -146,7 +148,13 @@ def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy) -> list[str]:
         if n.gain_db - o.gain_db > lim:
             out.append(f"{n.id}: gain raised by {n.gain_db - o.gain_db:.1f} dB in one step (max {lim})")
         if o.mute and not n.mute and n.gain_db > 0:
-            out.append(f"{n.id}: unmuting with positive gain; set gain <= 0 dB first")
+            before = unmute_levels.get(n.id)
+            if before is None:
+                out.append(f"{n.id}: unmuting with positive gain and no remembered level from before the mute; "
+                           "unmute at 0 dB first")
+            elif n.gain_db > before:
+                out.append(f"{n.id}: unmuting at {n.gain_db:+g} dB, above the {before:+g} dB it played at when "
+                           "muted; unmute at 0 dB first")
         for i, (nb, ob) in enumerate(zip(n.eq, o.eq)):
             nboost = nb.gain_db if nb.enabled else 0.0
             oboost = ob.gain_db if ob.enabled else 0.0

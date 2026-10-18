@@ -36,6 +36,8 @@ export interface Status {
   physical_writes_allowed?: boolean
   /** false while a real DSP is attached: master gain stays in the workstation and is not sent */
   master_on_device?: boolean
+  /** output -> level it played at before being muted (this connection); unmuting at or below it is direct */
+  unmute_levels?: Record<string, number>
   connection_epoch: number
   device: Device; tune_name: string; revision: number; undo_depth: number; redo_depth?: number
   save_error?: string | null; recovery_notice?: string | null

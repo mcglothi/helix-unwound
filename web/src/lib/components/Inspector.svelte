@@ -91,7 +91,7 @@
               <select value={x.slope_db} aria-label="{label} slope" onchange={(e) => xo(which as 'hp' | 'lp', { slope_db: +e.currentTarget.value })}>
                 {#each SLOPES as s}<option value={s}>{s} dB/oct</option>{/each}
               </select></label>
-            <label title="Filter shape. Linkwitz-Riley is the usual crossover choice: it blends flat with the matching filter on the neighbouring speaker">Type
+            <label title="Filter shape. Linkwitz-Riley is the usual crossover choice: electrically it sums flat with the matching filter on the neighbouring speaker; the blend you hear still depends on the drivers and their time alignment">Type
               <select value={x.type} aria-label="{label} type" onchange={(e) => xo(which as 'hp' | 'lp', { type: e.currentTarget.value as XoType })}>
                 {#each XOT as t}<option value={t.v}>{t.l}</option>{/each}
               </select></label>

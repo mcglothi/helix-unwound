@@ -93,6 +93,8 @@ class Engine:
     revision: int = 0
     proposals: dict = field(default_factory=dict)
     ab: dict = field(default_factory=lambda: {"A": None, "B": None, "active": None})
+    # output -> (level before it was muted, routing/role fingerprint); cleared on (dis)connect
+    _muted_at: dict = field(default_factory=dict)
     # Off unless `serve --allow-physical-writes`: supervised write sessions on a real DSP.
     physical_writes_allowed: bool = False
     # PC-Tool pings every ~0.85 s inside a session; None disables the pinger (tests).
@@ -192,6 +194,7 @@ class Engine:
                 if info.model_type != commands.PRO_MK2:
                     raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
             self._connection_epoch += 1
+            self._muted_at.clear()
             self.client = client
             self.session = session
             self._start_keepalive()
@@ -243,6 +246,7 @@ class Engine:
             client = self.client
             self.client = None
             self._connection_epoch += 1
+            self._muted_at.clear()
             self.device = DeviceState()
             self.applied_image = None
             if client is not None:
@@ -417,6 +421,7 @@ class Engine:
                 writes = self._write_image(img, tune=new)
             else:
                 self.pending_writes = len(mapping.diff(self.applied_image, img))
+            self._track_mutes(self.tune, new)
             self.history.append(self.tune)
             self.history = self.history[-200:]
             self.redo_stack.clear()
@@ -486,6 +491,7 @@ class Engine:
             writes = self._write_image(img, tune=t)
         else:
             self.pending_writes = len(mapping.diff(self.applied_image, img))
+        self._track_mutes(self.tune, t)
         self.history = (self.history + [self.tune])[-200:] if history is None else history
         self.redo_stack = [] if redo is None else redo
         if ab is not None:
@@ -1020,6 +1026,7 @@ class Engine:
             "demo": self.demo,
             "physical_writes_allowed": self.physical_writes_allowed,
             "master_on_device": self._master_on_device(),
+            "unmute_levels": self.unmute_levels(),
             "connection_epoch": self._connection_epoch,
             "device": self.device.__dict__,
             "tune_name": self.tune.name,
@@ -1061,10 +1068,40 @@ class Engine:
             self.design = proposed
             self.revision += 1
 
+    @staticmethod
+    def _output_context(ch) -> str:
+        return fingerprint({"mix": ch.mix, "role": ch.role.value})
+
+    def unmute_levels(self, t: Tune | None = None) -> dict[str, float]:
+        """Levels outputs were playing at when muted on this connection, still valid for t's
+        routing/role. Unmuting at or below these returns to a known state."""
+        t = t or self.tune
+        out = {}
+        for cid, (gain, ctx) in self._muted_at.items():
+            try:
+                if self._output_context(t.channel(cid)) == ctx:
+                    out[cid] = gain
+            except KeyError:
+                pass
+        return out
+
+    def _track_mutes(self, old: Tune, new: Tune) -> None:
+        for n in new.channels:
+            try:
+                o = old.channel(n.id)
+            except KeyError:
+                continue
+            if n.mute and not o.mute:
+                # the level that was audible before the mute (not a gain raised in the same edit)
+                self._muted_at[n.id] = (min(o.gain_db, n.gain_db), self._output_context(o))
+            elif not n.mute:
+                self._muted_at.pop(n.id, None)
+
     def _check(self, t: Tune, previous: Tune | None = None) -> list[str]:
         return safety.check(t, self.policy, previous=previous,
                             driver_limits=equipment.channel_driver_limits(self.design),
-                            protections=self.protections)
+                            protections=self.protections,
+                            unmute_levels=self.unmute_levels(previous) if previous is not None else None)
 
     def _advisories(self, t: Tune) -> list[str]:
         return safety.advisories(t, self.policy, driver_limits=equipment.channel_driver_limits(self.design),

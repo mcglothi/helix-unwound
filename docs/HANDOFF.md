@@ -20,6 +20,9 @@ Branch: `pi/helixtune-foundation`
 - Studio Console visual direction, consistent themes, Drive/Setup/System views, phone/tablet/desktop support, foldables considered. Tim explicitly prioritizes polished modern UI/UX and research into community tuning methods AND complaints about DSP software; record concrete acceptance criteria, not only technical ideas.
 - REW alongside tuning, proposals and verification, legacy preset/measurement imports, equipment and wiring model.
 - Codex and Claude alternate on this branch with milestone checkpoints. Current priority: foundation reliability before more features.
+- **Pro tool, not kid gloves (Tim, 2026-10-18).** Keep safeguards strict while a feature is being validated, then remove
+  friction that guards against non-surprises. Each guard should name the specific failure it prevents. Example: mute/unmute
+  returns straight to the level the output played at before the mute; only a level raised while muted (or unknown) needs review.
 - All hardware semantics remain provisional; Windows capture session is still needed. No hardware accessed during Codex review/setup.
 
 ## Checkpoints
@@ -333,8 +336,9 @@ partial-open/close failures on hardware. Physical transports still reject every 
    labels and disables the master tile. First used on hardware 2026-10-18: full overwrite
    plus EQ/mute/gain edits, all acknowledged (see HARDWARE-EVIDENCE). Refused changes now show a
    persistent "Not applied" panel in every view and edited fields snap back; unmuting an output
-   with positive gain offers a reviewed, atomic "Unmute at 0 dB" (POST /api/channels/{cid}/unmute-at-zero,
-   stale review refused, never raises gain). Inspector EQ/crossover fields are labelled. Start/end every truck test by reading the
+   with positive gain unmutes directly back to the level it played at before the mute (remembered per output,
+   bound to routing/role, cleared on connect/disconnect); only a level raised while muted or unknown offers the
+   reviewed, atomic "Unmute at 0 dB" (POST /api/channels/{cid}/unmute-at-zero). Inspector fields are labelled. Start/end every truck test by reading the
    Director's Digital Volume.
 2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.

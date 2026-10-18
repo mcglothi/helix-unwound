@@ -53,3 +53,61 @@ def test_never_raises_gain(client):
     r = c.post("/api/channels/A/unmute-at-zero", json={"reviewed_gain_db": {"A": -3.0, "B": 5.0}})
     assert r.status_code == 200
     assert engine.tune.channel("A").gain_db == -3.0 and engine.tune.channel("B").gain_db == 0.0
+
+
+@pytest.fixture
+def playing(synthetic_mapping, tmp_path):
+    """A/B linked and playing at +5 dB, as in Tim's tune."""
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    t = Tune()
+    for cid in ("A", "B"):
+        t.channel(cid).link_group = 2
+        t.channel(cid).gain_db = 5.0
+    engine.tune = t
+    with owner_client(create_app(engine)) as c:
+        yield c, engine
+
+
+def test_mute_unmute_restores_the_previous_level_repeatedly(playing):
+    """Tim 2026-10-18: a pro tool; mute/unmute during system testing must just go back."""
+    c, engine = playing
+    for _ in range(3):
+        assert c.patch("/api/channels/A", json={"mute": True}).status_code == 200
+        assert c.get("/api/status").json()["unmute_levels"] == {"A": 5.0, "B": 5.0}
+        r = c.patch("/api/channels/A", json={"mute": False})
+        assert r.status_code == 200, r.text
+        assert [(engine.tune.channel(x).gain_db, engine.tune.channel(x).mute) for x in "AB"] == [(5.0, False)] * 2
+    assert c.get("/api/status").json()["unmute_levels"] == {}
+
+
+def test_raised_while_muted_still_needs_the_review(playing):
+    c, engine = playing
+    c.patch("/api/channels/A", json={"mute": True})
+    assert c.patch("/api/channels/A", json={"gain_db": 6.0}).status_code == 200
+    r = c.patch("/api/channels/A", json={"mute": False})
+    assert r.status_code == 409 and "above the +5 dB it played at" in str(r.json()["problems"])
+    assert c.post("/api/channels/A/unmute-at-zero", json={"reviewed_gain_db": {"A": 6.0, "B": 6.0}}).status_code == 200
+
+
+def test_lowered_while_muted_unmutes_directly(playing):
+    c, engine = playing
+    c.patch("/api/channels/A", json={"mute": True})
+    c.patch("/api/channels/A", json={"gain_db": 3.0})
+    assert c.patch("/api/channels/A", json={"mute": False}).status_code == 200
+    assert engine.tune.channel("B").gain_db == 3.0 and not engine.tune.channel("B").mute
+
+
+def test_changed_routing_or_a_reconnect_forgets_the_level(playing):
+    from helixtune.emulator import EmulatedDevice
+    from helixtune.protocol.client import Client
+    c, engine = playing
+    c.patch("/api/channels/A", json={"mute": True})
+    c.patch("/api/channels/A?link=false", json={"mix": {"R": 1.0}})                  # A rerouted while muted
+    r = c.patch("/api/channels/A?link=false", json={"mute": False})
+    assert r.status_code == 409 and "no remembered level" in str(r.json()["problems"])
+    assert c.patch("/api/channels/B?link=false", json={"mute": False}).status_code == 200   # B untouched: fine
+    c.patch("/api/channels/B?link=false", json={"mute": True})
+    engine.attach(Client(EmulatedDevice(), timeout=0.05), "emulator")               # new connection
+    assert engine.unmute_levels() == {}
+    assert c.patch("/api/channels/B?link=false", json={"mute": False}).status_code == 409
+    engine.detach()

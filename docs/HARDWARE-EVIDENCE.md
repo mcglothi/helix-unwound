@@ -195,3 +195,29 @@ crossover sections and `SUB_RC_GAIN_NX1_11_7` (0x231f).
 Still uncaptured: master gain semantics (`GAIN1` is a provisional master), Save&Store,
 Bessel/LR36 and higher slopes, and analog-input routing (inputs 2-11 of the main matrix).
 
+## First HelixTune-driven session (2026-10-18, evening)
+
+`helixtune serve --allow-physical-writes` on the Mac. Active tune: the 2026-10-18 stored
+backup imported as a scene (0 safety problems, 0 ineligible settings; master excluded).
+Tim connected in the UI with writes enabled, reviewed, and typed OVERWRITE.
+
+- **First attempt:** the attach succeeded, then a keep-alive came back
+  `02 00 22 b8 00 00 00 01`. The strict 8-byte echo check set `needs_reconnect`, which
+  correctly refused every write; nothing was sent. Captures show the last byte is a live
+  value: always `00` with the audio muted (2026-10-17), and `00`-`10` in about 1 of 6
+  replies with music playing (2026-10-18). PC-Tool ignores it. Fixed in `3f31544` (first
+  seven bytes must match; the last is returned, meaning not decoded).
+- **Full overwrite:** 37 write blocks (2071 managed parameters minus master), all
+  acknowledged; device `synchronized`; sound unchanged, as expected for the same tune.
+- **Incremental edits:** EQ band 7 on A (linked to B) moved through several values down to
+  -21.75 dB and Q 4.2/4.3, then back to 0 dB. Each edit was 2 acknowledged blocks (A and B).
+  Hard to hear: narrow Q at 100 Hz on midbass at low volume.
+- **Mute** on A/B was clearly audible. **Unmute was refused** by the safety rule "unmuting
+  with positive gain" because A/B run at +5 dB in Tim's tune. Restored via gain 0 dB ->
+  unmute -> +3 -> +5 dB, all acknowledged. Two accidental EQ boosts (+9.5/+10.5 dB) were
+  rejected by the boost limits and never written.
+- Disconnect closed the session; Digital Volume unchanged; audio normal.
+
+Follow-up: the unmute rule should allow returning an output to the level it had when muted
+(or offer "unmute at 0 dB"), and the UI must show why an action was rejected.
+

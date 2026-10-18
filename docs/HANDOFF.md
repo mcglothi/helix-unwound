@@ -330,7 +330,9 @@ partial-open/close failures on hardware. Physical transports still reject every 
    first-write confirmation and shows port, exclusions, refusals and live consequences.
    While a real DSP is attached, master gain is workstation-only: `status.master_on_device` is
    false, predictions leave master changes out (with a stated limitation), and the Drive view
-   labels and disables the master tile. Not yet used on hardware. Start/end every truck test by reading the
+   labels and disables the master tile. First used on hardware 2026-10-18: full overwrite
+   plus EQ/mute/gain edits, all acknowledged (see HARDWARE-EVIDENCE). Open: unmute rule blocks
+   restoring an output's own positive gain, and rejected actions need visible reasons in the UI. Start/end every truck test by reading the
    Director's Digital Volume.
 2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.

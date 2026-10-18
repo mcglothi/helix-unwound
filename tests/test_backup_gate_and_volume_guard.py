@@ -74,3 +74,67 @@ def test_real_device_map_protects_digital_volume_if_available():
     m = DeviceMapping(load_at01(at01))
     assert 0x22F9 in m.protected and len(m.protected) == 12
     assert not set(m.render(Tune())) & m.protected
+
+
+class PhysicalDsp:
+    """A real-port stand-in (not an EmulatedDevice) that speaks the protocol via an emulator."""
+    def __init__(self):
+        object.__setattr__(self, "dev", EmulatedDevice())
+    def reset_input_buffer(self): self.dev.reset_input_buffer()
+    def write(self, data): return self.dev.write(data)
+    def read(self, size): return self.dev.read(size)
+    def __getattr__(self, name): return getattr(self.dev, name)
+    def __setattr__(self, name, value): setattr(self.dev, name, value)   # baudrate set by the session
+
+
+@pytest.fixture
+def quick_session(monkeypatch):
+    from helixtune.protocol import session
+    for name in ("SETTLE_S", "ACK_WAIT_S", "POST_SYNC_S"):
+        monkeypatch.setattr(session, name, 0)
+
+
+def test_physical_writes_stay_refused_without_the_opt_in(synthetic_mapping, tmp_path, quick_session):
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    port = PhysicalDsp()
+    with pytest.raises(EngineError, match="--allow-physical-writes"):
+        engine.attach(Client(port, allow_writes=True, physical_session=True, timeout=0.05), "serial", "x")
+    engine.physical_writes_allowed = True
+    with pytest.raises(EngineError, match="--allow-physical-writes"):      # needs the session client too
+        engine.attach(Client(port, allow_writes=True, timeout=0.05), "serial", "x")
+    assert port.dev.log == []                                               # nothing reached the port
+
+
+def test_opted_in_physical_session_writes_parameters_and_nothing_else(synthetic_mapping, tmp_path, quick_session):
+    from helixtune.protocol.session import wire_commands
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    engine.physical_writes_allowed = True
+    port = PhysicalDsp()
+    client = Client(port, allow_writes=True, physical_session=True, timeout=0.05)
+    engine.attach(client, "serial", "x")
+    assert port.dev.session_open and port.dev.device_baud == commands.HIGH_HOST_BAUD
+    assert engine.push_full("OVERWRITE") > 0
+    for refused in (bytes.fromhex("05 ff fe 01 06"), bytes.fromhex("04 00 00 12") + bytes(18),
+                    bytes.fromhex("13 00 40") + bytes(65), bytes.fromhex("17 04 00"),
+                    bytes.fromhex("1b 06 00 00 00 00 00 00"), bytes.fromhex("32 0f 00 00 02 00 00"),
+                    bytes.fromhex("32 01 05 00")):
+        with pytest.raises(WritesDisabled):
+            client.send(refused)
+    engine.detach()
+    kinds = {c[:1] for c in wire_commands(b"".join(port.dev.log)) if c != b"SYNC"}
+    assert kinds <= {b"\x08", b"\x09", b"\x0a", b"\x02", b"\x03"}
+    assert not port.dev.session_open and port.dev.device_baud == commands.LOW_HOST_BAUD
+
+
+def test_cli_serve_flag_defaults_off(monkeypatch, synthetic_mapping, tmp_path):
+    import uvicorn
+    from helixtune import api, cli, devicefile
+    engines = []
+    monkeypatch.setattr(cli, "find_param_map", lambda explicit: "unused")
+    monkeypatch.setattr(devicefile, "load_at01", lambda path: None)
+    monkeypatch.setattr(Engine, "from_param_map", classmethod(lambda cls, pm, data: Engine(mapping=synthetic_mapping, data_dir=tmp_path)))
+    monkeypatch.setattr(api, "create_app", lambda engine: engines.append(engine))
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    assert cli.main(["serve", "--data", str(tmp_path)]) == 0
+    assert cli.main(["serve", "--data", str(tmp_path), "--allow-physical-writes"]) == 0
+    assert [e.physical_writes_allowed for e in engines] == [False, True]

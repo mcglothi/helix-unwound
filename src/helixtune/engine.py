@@ -93,6 +93,8 @@ class Engine:
     revision: int = 0
     proposals: dict = field(default_factory=dict)
     ab: dict = field(default_factory=lambda: {"A": None, "B": None, "active": None})
+    # Off unless `serve --allow-physical-writes`: supervised write sessions on a real DSP.
+    physical_writes_allowed: bool = False
     # PC-Tool pings every ~0.85 s inside a session; None disables the pinger (tests).
     keepalive_s: float | None = None
 
@@ -167,8 +169,10 @@ class Engine:
                 if kind != 'emulator' or not isinstance(client.t, EmulatedDevice):
                     raise EngineError('Demo mode only connects to its in-memory emulator')
             from .emulator import EmulatedDevice
-            if client.allow_writes and not isinstance(client.t, EmulatedDevice):
-                raise EngineError("Physical writes are disabled pending captured-protocol validation; connect read-only or use the emulator")
+            if client.allow_writes and not isinstance(client.t, EmulatedDevice) and not (
+                    self.physical_writes_allowed and client.physical_session):
+                raise EngineError("Physical writes are disabled; start the server with --allow-physical-writes "
+                                  "for a supervised session, or connect read-only")
             session = None
             if client.allow_writes:
                 # Writes need PC-Tool's session. Session.open owns the first contact: its baud

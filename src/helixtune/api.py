@@ -831,8 +831,9 @@ def create_app(engine: Engine) -> FastAPI:
         with engine._lock:
             if engine.demo and c.port != "emulator":
                 raise EngineError("Demo mode cannot open physical ports; select emulator")
-            if c.port != "emulator" and c.allow_writes:
-                raise EngineError("Physical writes are disabled pending captured-protocol validation; connect read-only or use the emulator")
+            if c.port != "emulator" and c.allow_writes and not engine.physical_writes_allowed:
+                raise EngineError("Physical writes are disabled; start the server with --allow-physical-writes "
+                                  "for a supervised session, or connect read-only")
             engine.detach()
             if c.port == "emulator":
                 client = Client(EmulatedDevice(), allow_writes=c.allow_writes)
@@ -843,7 +844,8 @@ def create_app(engine: Engine) -> FastAPI:
 
             ser = serial.Serial(c.port, LOW_HOST_BAUD, bytesize=8, parity="N", stopbits=1, timeout=0.05)
             try:
-                return engine.attach(Client(ser, allow_writes=c.allow_writes, timeout=1.0), "serial", c.port).__dict__
+                return engine.attach(Client(ser, allow_writes=c.allow_writes, timeout=1.0,
+                                            physical_session=c.allow_writes), "serial", c.port).__dict__
             except Exception:
                 ser.close()
                 raise

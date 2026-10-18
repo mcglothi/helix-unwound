@@ -97,6 +97,8 @@ send identify only. The emulator models its line rate (frames at the wrong host 
 noise) and the captured truncated acks. Physical transports reject every session byte
 (`Client` gate) except inside `Client.stored_backup_mode()`, which admits exactly the backup
 session (start/end, baud switch, sync, keep-alive, `32 01 06 00`) and never `03` writes.
+Write sessions on a real DSP need `serve --allow-physical-writes` (off by default): the
+`physical_session` gate admits that same session plus `03` parameter writes, nothing else.
 
 Director interaction, Save&Store/flash writes, master volume, routing and the
 unsupported operation families remain explicit follow-up work.

@@ -25,11 +25,15 @@ MAX_PORT_READ_TIMEOUT_S = 0.1
 
 
 class Client:
-    def __init__(self, transport: Transport, *, allow_writes: bool = False, timeout: float = 0.5):
+    def __init__(self, transport: Transport, *, allow_writes: bool = False, timeout: float = 0.5,
+                 physical_session: bool = False):
         self.t = transport
         self.allow_writes = allow_writes
         self.timeout = timeout
         self._backup_mode = False
+        # Supervised physical sessions (serve --allow-physical-writes): PC-Tool's session plus 03
+        # parameter writes. Narrower than the emulator: no 04/05/13/17/1b or other 32 commands.
+        self.physical_session = physical_session
         port_timeout = getattr(transport, "timeout", 0)
         if self._physical() and hasattr(transport, "timeout") and (
                 port_timeout is None or port_timeout > MAX_PORT_READ_TIMEOUT_S):
@@ -69,8 +73,10 @@ class Client:
     def _gate(self, payload: bytes) -> None:
         if not payload:
             raise ValueError("empty command")
+        session_ok = self._backup_mode or self.physical_session
         if self._physical() and not (commands.is_safe_read(payload)
-                                     or (self._backup_mode and commands.is_backup_session_command(payload))):
+                                     or (session_ok and commands.is_backup_session_command(payload))
+                                     or (self.physical_session and payload[0] == commands.Cmd.WRITE_RAM)):
             raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads (plus the backup session); all other commands remain disabled")
         if payload[0] in (0x04, 0x05):
             raise WritesDisabled("Commands 04/05 are preset-storage operations, not RAM access; unsupported")
@@ -91,7 +97,7 @@ class Client:
 
     def send_sync(self) -> None:
         """The 10 x 42 00 burst PC-Tool sends around every baud change."""
-        if self._physical() and not self._backup_mode:
+        if self._physical() and not (self._backup_mode or self.physical_session):
             raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
         self.t.write(frame.SYNC_FRAME)
 

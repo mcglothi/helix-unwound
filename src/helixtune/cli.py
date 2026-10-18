@@ -120,6 +120,10 @@ def cmd_serve(args) -> int:
 
     eng = Engine.from_param_map(load_at01(find_param_map(args.at01)), Path(args.data).expanduser())
     eng.keepalive_s = 0.8          # PC-Tool pings every ~0.85 s while a session is open
+    eng.physical_writes_allowed = bool(getattr(args, "allow_physical_writes", False))
+    if eng.physical_writes_allowed:
+        print("PHYSICAL WRITES ENABLED. Supervised use only: lower or mute the audio, read the Director's "
+              "Digital Volume before and after, and keep PC-Tool closed.")
     print("Owner UI: run 'helixtune open' in another terminal (use matching --data/--port).")
     if args.host not in ("127.0.0.1", "localhost"):
         print("Remote access requires credentials. Use a trusted network or an encrypted tunnel for HTTP.")
@@ -185,6 +189,8 @@ def main(argv=None) -> int:
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--data", default="~/.helixtune")
     s.add_argument("--at01")
+    s.add_argument("--allow-physical-writes", action="store_true",
+                   help="permit supervised write sessions on a real DSP (off by default)")
     s.set_defaults(fn=cmd_serve)
     d = sub.add_parser("demo", help="hardware-free workstation with synthetic example data")
     d.add_argument("--host", default="127.0.0.1")

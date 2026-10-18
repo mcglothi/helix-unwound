@@ -319,8 +319,12 @@ partial-open/close failures on hardware. Physical transports still reject every 
    physical ports must have a read timeout <= 0.1 s; a missed keep-alive sets `needs_reconnect`
    and refuses every write, full overwrites included, until reconnect; a partial `Session.open`
    closes itself (once) before raising, and an unrecognised device gets nothing after identify.
-   Physical engine sessions are still disabled: an explicit opt-in (`serve --allow-physical-writes`)
-   needs Tim's decision. Start/end every truck test by reading the Director's Digital Volume.
+   Physical write sessions exist only behind `serve --allow-physical-writes` (Tim approved
+   2026-10-18; off by default). With it, a write-enabled serial connection may carry identify,
+   bounded stored reads, PC-Tool's session/keep-alive, `32 01 06 00` and `03` writes only.
+   `04`/`05`/`13`/`17`/`1b` and other `32` commands stay refused, and the Director-volume guard
+   and reconnect rule apply. Not yet used on hardware. Start/end every truck test by reading the
+   Director's Digital Volume.
 2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
 4. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Portable CI is now implemented (milestone 8); settle a license before inviting community code contributions.

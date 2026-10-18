@@ -33,10 +33,25 @@ selects a known scene. Source dates lack an explicit timezone, so they are retai
 as source text; capture timestamp stays unknown. Import never relabels historical
 hardware as today's installation. Use the normal Measurements review afterward.
 
+**Captured just now (one step).** While a DSP (or the emulator) is connected and
+synchronized, the capture-time tune list offers *On the DSP now (just captured)*, selected by
+default. With the outputs tagged and the owner's explicit confirmation ("these outputs were
+playing the tune on the DSP, through the drivers currently recorded in Setup"), import stores an
+exact copy of the workstation tune as the capture-time tune and attests the currently recorded
+drivers in the same operation, so the capture can feed estimates and assisted tuning
+immediately. It is bound to the workstation revision and connection epoch seen when the
+preview opened (any change refuses), requires recorded drivers on every tagged output, and
+records `capture_context` (epoch, revision, applied-image and design fingerprints, limits) in
+the import provenance. This is an owner statement, not hardware verification: synchronized means
+acknowledged managed writes only; master gain is excluded on hardware; the Director or head unit
+can change state outside the workstation; nothing is read back. Seat names are normalised
+(trimmed, lower case) for every measurement and when selecting by seat.
+
 HTTP entry points: owner-only `GET /api/rew`,
 `GET /api/rew/measurements/{uuid}` (optional `port`), and
 `POST /api/rew/import` with `uuid`, `port`, `expected_fingerprint`, optional
-`channels`, `seat` and `tune_snapshot`. Requests have finite timeouts/response limits,
+`channels`, `seat` and `tune_snapshot`, or `captured_now` with `owner_confirmed`,
+`expected_revision` and `expected_connection_epoch`. Requests have finite timeouts/response limits,
 ignore proxy environment variables and do not follow redirects.
 
 Reference: [official REW API documentation](https://www.roomeqwizard.com/help/help/html/api.html).

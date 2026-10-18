@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, field_validator, Field
 
 from .mapping import channel_response
 from .model import Role, Tune
@@ -48,12 +48,26 @@ class DriverProvenanceEvent(BaseModel):
     capture_fingerprint: str
 
 
+def normalise_seat(seat: str) -> str:
+    return " ".join(str(seat).split()).lower()
+
+
 class Measurement(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10])
     name: str
     kind: str = "rta"                       # rta | sweep
     channels: list[str] = Field(default_factory=list)   # channel ids that were playing
-    seat: str = "driver"                    # driver | passenger | center | average
+    seat: str = "driver"                    # driver | passenger | center | average (normalised)
+
+    @field_validator("seat")
+    @classmethod
+    def _normalise_seat(cls, v: str) -> str:
+        # "Driver" and "driver" are the same position; an unmatched spelling would silently
+        # never be selected for estimates or solvers.
+        v = normalise_seat(v)
+        if not v:
+            raise ValueError("seat must not be empty")
+        return v
     taken_at: float = Field(default_factory=time.time)
     source: str = ""
     notes: str = ""

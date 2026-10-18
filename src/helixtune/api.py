@@ -103,6 +103,15 @@ class RewImport(BaseModel):
     channels: list[str] = Field(default_factory=list)
     seat: str = Field('driver', min_length=1, max_length=100)
     tune_snapshot: str | None = None
+    # One step for a measurement taken just now: the capture-time tune is the tune on the
+    # connected, synchronized DSP and the drivers are the ones currently installed.
+    captured_now: bool = False
+    expected_revision: int | None = None
+    expected_connection_epoch: int | None = None
+    # Explicit owner statement that these outputs played the synchronized tune through the
+    # currently recorded drivers. Not hardware verification (master excluded, Director/input
+    # state can change outside the workstation, no readback).
+    owner_confirmed: bool = False
 
 
 class SnapshotName(BaseModel):
@@ -589,8 +598,34 @@ def create_app(engine: Engine) -> FastAPI:
             raise HTTPException(409, 'REW capture changed; refresh the preview before importing')
         with engine._lock:
             channels = sorted({engine.tune.channel(cid).id for cid in value.channels})
-            tune = engine.snapshot_tune(value.tune_snapshot) if value.tune_snapshot else None
+            if value.captured_now:
+                if value.tune_snapshot:
+                    raise HTTPException(422, 'Choose either "captured just now" or a capture-time scene, not both')
+                if not channels:
+                    raise HTTPException(422, 'Tag the outputs that were playing')
+                dev = engine.device
+                if engine.client is None or not dev.baselined or dev.sync_state != 'synchronized':
+                    raise HTTPException(409, '"Captured just now" needs a connected DSP that is synchronized with this '
+                                             'workstation; otherwise choose the capture-time scene')
+                if not value.owner_confirmed:
+                    raise HTTPException(422, 'Confirm that these outputs played the synchronized tune through the drivers currently recorded')
+                if value.expected_revision != engine.revision or value.expected_connection_epoch != engine._connection_epoch:
+                    raise HTTPException(409, 'The tune or connection changed after you started this import; confirm what was playing and import again')
+                missing = [c for c in channels if not engine.driver_identity(c)]
+                if missing:
+                    raise HTTPException(409, f'Record the drivers on output(s) {", ".join(missing)} in Setup first')
+                tune = Tune.model_validate(engine.tune.model_dump())
+            else:
+                tune = engine.snapshot_tune(value.tune_snapshot) if value.tune_snapshot else None
             provenance = {'provider': 'REW', 'port': value.port, **preview}
+            if value.captured_now:
+                from .proposals import fingerprint as _fp
+                provenance['capture_context'] = {
+                    'kind': 'captured_now', 'connection_epoch': engine._connection_epoch, 'revision': engine.revision,
+                    'applied_image': _fp(sorted((a, w.hex()) for a, w in (engine.applied_image or {}).items())),
+                    'design': _fp(engine.design.model_dump(mode='json')),
+                    'limits': 'acknowledged managed writes only; master excluded on hardware; Director/input state '
+                              'may change outside the workstation; no hardware readback'}
             for info in engine.measurements.list():
                 existing = engine.measurements.get(info['id'])
                 if (existing.import_provenance == provenance and existing.channels == channels and
@@ -600,8 +635,11 @@ def create_app(engine: Engine) -> FastAPI:
                 seat=value.seat, taken_at=0, source="Imported from REW",
                 notes=preview['summary']['notes'], tune=tune, import_provenance=provenance, **arrays)
             engine.measurements.save(measurement)
+            if value.captured_now:
+                engine.attest_measurement(measurement.id, 'owner',
+                                          reason='Captured just now: drivers as currently installed (owner import)')
             engine.revision += 1
-            engine._log('owner', f'Imported REW capture {measurement.name}')
+            engine._log('owner', f'Imported REW capture {measurement.name}' + (' (captured just now)' if value.captured_now else ''))
             return {'id': measurement.id, 'created': True}
 
     # ---- targets & system view -----------------------------------------------------

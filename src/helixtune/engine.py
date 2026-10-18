@@ -665,7 +665,7 @@ class Engine:
         """Prefer isolated, newest captures; report every refusal and overlap."""
         candidates, excluded, available = [], [], 0
         for info in self.measurements.list():
-            if info["seat"] != seat:
+            if measurements.normalise_seat(info["seat"]) != measurements.normalise_seat(seat):
                 continue
             available += 1
             m = self.measurements.get(info["id"])
@@ -693,7 +693,7 @@ class Engine:
         """Latest measurement covering each channel at a seat (single-channel preferred)."""
         out, single = {}, set()
         for info in self.measurements.list():
-            if info["seat"] != seat or not info["channels"]:
+            if measurements.normalise_seat(info["seat"]) != measurements.normalise_seat(seat) or not info["channels"]:
                 continue
             m = None
             for c in info["channels"]:

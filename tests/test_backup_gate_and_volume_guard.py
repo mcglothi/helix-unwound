@@ -208,3 +208,26 @@ def test_status_reports_the_physical_write_capability(synthetic_mapping, tmp_pat
     assert engine.status()["physical_writes_allowed"] is False
     engine.physical_writes_allowed = True
     assert engine.status()["physical_writes_allowed"] is True
+
+
+def test_master_is_workstation_only_on_a_real_dsp_including_predictions(synthetic_mapping, tmp_path, quick_session):
+    """Codex follow-up: master is excluded from physical images, so it must not look applied."""
+    import numpy as np
+    from helixtune.measurements import GRID, Measurement
+    from helixtune.model import Tune
+    captured = Tune()
+    m = Measurement(name="flat", channels=["A"], freqs=[20.0, 20000.0], spl=[80.0, 80.0], tune=captured)
+    now = Tune(master_gain_db=-6.0)
+    from helixtune import measurements
+    assert np.allclose(measurements.predict(m, now, GRID) - measurements.predict(m, now, GRID, include_master=False), -6.0)
+
+    emu = Engine(mapping=synthetic_mapping, data_dir=tmp_path / "emu")
+    emu.attach(Client(EmulatedDevice(), allow_writes=True, timeout=0.05), "emulator")
+    assert emu.status()["master_on_device"] is True and np.allclose(emu._predict(m, now, GRID)[0], 74.0)
+    emu.detach()
+
+    engine, port = _physical_engine(synthetic_mapping, tmp_path / "hw")
+    assert engine.status()["master_on_device"] is False
+    assert np.allclose(engine._predict(m, now, GRID), 80.0)                  # master change not shown as acoustic
+    engine.detach()
+    assert engine.status()["master_on_device"] is True                       # offline editing models it again

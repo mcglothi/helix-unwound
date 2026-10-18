@@ -34,6 +34,8 @@ export interface Status {
   demo: boolean
   /** server started with --allow-physical-writes (supervised write sessions on a real DSP) */
   physical_writes_allowed?: boolean
+  /** false while a real DSP is attached: master gain stays in the workstation and is not sent */
+  master_on_device?: boolean
   connection_epoch: number
   device: Device; tune_name: string; revision: number; undo_depth: number; redo_depth?: number
   save_error?: string | null; recovery_notice?: string | null

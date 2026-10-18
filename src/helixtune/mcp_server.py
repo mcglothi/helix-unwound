@@ -129,7 +129,9 @@ def reset_eq(channel: str, link: bool = True) -> str:
 
 @mcp.tool()
 def set_master_gain(gain_db: float) -> str:
-    """Master gain in dB (<= 0)."""
+    """Master gain in dB (<= 0). On a real DSP this is workstation-only: it is not sent to the
+    hardware (its parameter is unverified) and predictions leave it out; status.master_on_device
+    is false."""
     return _call("PATCH", "/api/master", {"gain_db": gain_db})
 
 

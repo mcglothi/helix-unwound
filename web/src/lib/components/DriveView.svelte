@@ -20,6 +20,8 @@
     }
   }
   const master = $derived(app.tune?.master_gain_db ?? 0)
+  // A real DSP never receives master (its parameter is unverified), so don't offer it as a control.
+  const masterLocal = $derived(app.status?.master_on_device === false)
   const ab = $derived(app.status?.ab)
   const SEATS = [{ v: 'driver', l: 'Driver' }, { v: 'passenger', l: 'Passenger' }, { v: 'center', l: 'Both seats' }]
 </script>
@@ -53,9 +55,10 @@
     <div class="panel tile">
       <div class="head"><span class="swatch" style="background:var(--accent)"></span><span class="label">Master</span></div>
       <div class="val mono">{fmt(master)}<small> dB</small></div>
+      {#if masterLocal}<p class="note">Workstation only · not sent to this DSP. Use the Director for volume.</p>{/if}
       <div class="pm">
-        <button aria-label="Master down 1 dB" onclick={() => app.setMaster(Math.max(-80, master - 1))}>−</button>
-        <button aria-label="Master up 1 dB" onclick={() => app.setMaster(Math.min(0, master + 1))}>+</button>
+        <button aria-label="Master down 1 dB" disabled={masterLocal} onclick={() => app.setMaster(Math.max(-80, master - 1))}>−</button>
+        <button aria-label="Master up 1 dB" disabled={masterLocal} onclick={() => app.setMaster(Math.min(0, master + 1))}>+</button>
       </div>
     </div>
   </section>
@@ -77,6 +80,7 @@
   .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .graph { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
   .plot { height: min(40dvh, 360px); }
+  .note { margin: 0; font-size: 12px; color: var(--caution); }
   .levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--gap); }
   .tile { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
   .tile .head { justify-content: flex-start; }

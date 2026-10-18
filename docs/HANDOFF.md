@@ -328,7 +328,9 @@ partial-open/close failures on hardware. Physical transports still reject every 
    and baseline. The UI enables the write checkbox for serial ports only when the server reports
    `physical_writes_allowed`; the existing context-bound review + typed OVERWRITE is the
    first-write confirmation and shows port, exclusions, refusals and live consequences.
-   Not yet used on hardware. Start/end every truck test by reading the
+   While a real DSP is attached, master gain is workstation-only: `status.master_on_device` is
+   false, predictions leave master changes out (with a stated limitation), and the Drive view
+   labels and disables the master tile. Not yet used on hardware. Start/end every truck test by reading the
    Director's Digital Volume.
 2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.

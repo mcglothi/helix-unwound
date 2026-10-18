@@ -342,6 +342,13 @@ class Engine:
         from .emulator import EmulatedDevice
         return self.client is not None and not isinstance(self.client.t, EmulatedDevice)
 
+    def _master_on_device(self) -> bool:
+        """False while a real DSP is attached: its images exclude the provisional master."""
+        return not self._is_physical()
+
+    def _predict(self, m, tune: Tune, grid):
+        return measurements.predict(m, tune, grid, include_master=self._master_on_device())
+
     def _physical_scope(self, tune: Tune) -> dict:
         physical = self._is_physical()
         return {"physical": physical,
@@ -565,7 +572,7 @@ class Engine:
             measured = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
             state, why = self.measurement_status(m)
             issues = ([why] if state != "current" else []) + measurements.prediction_issues(m, self.tune)
-            predicted = None if issues else measurements.smooth(measurements.predict(m, self.tune, grid), grid, smoothing)
+            predicted = None if issues else measurements.smooth(self._predict(m, self.tune, grid), grid, smoothing)
             idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
             return {"id": m.id, "name": m.name, "channels": m.channels, "has_tune": m.tune is not None,
                     "freqs": grid[idx].round(2).tolist(), "measured": measured[idx].round(2).tolist(),
@@ -608,6 +615,8 @@ class Engine:
                            "Capture and playback levels must be comparable; absolute SPL and clipping/headroom are not verified.",
                            "Deep filter attenuation and mute use numerical floors; remeasurement is required to verify the result.",
                            "Outside each capture frequency range, edge values are extended; inspect contributor bandwidths before interpreting the curve."]
+            if not self._master_on_device():
+                limitations.append("Master gain is workstation-only on this DSP (not sent), so it is left out of this estimate.")
             if len(chosen) > 1:
                 limitations.append("Separate captures are combined as a power sum, not a measured acoustic system response.")
             if any(len(m.channels) > 1 for m in chosen):
@@ -622,7 +631,7 @@ class Engine:
                    "aggregation": "power_sum" if len(chosen) > 1 else "single_capture" if chosen else "none"}
             for m in chosen:
                 meas = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
-                pred = measurements.smooth(measurements.predict(m, now, grid), grid, smoothing)
+                pred = measurements.smooth(self._predict(m, now, grid), grid, smoothing)
                 meas_p.append(10 ** (meas / 10))
                 pred_p.append(10 ** (pred / 10))
                 roles = {now.channel(c).role.value for c in m.channels}
@@ -716,7 +725,7 @@ class Engine:
         if not anchor:
             raise NoTrustedAnchor(f"no trusted measurement at the {seat} seat to set a level reference "
                                   "(measurements with unknown or outdated drivers are not used)")
-        power = sum(10 ** (measurements.smooth(measurements.predict(m, self.tune, grid), grid, 6) / 10) for m in anchor)
+        power = sum(10 ** (measurements.smooth(self._predict(m, self.tune, grid), grid, 6) / 10) for m in anchor)
         pred = 10 * np.log10(power)
         return tgt - tgt[band].mean() + pred[band].mean(), {m.id: self._measurement_fp(m) for m in anchor}
 
@@ -1010,6 +1019,7 @@ class Engine:
         return {
             "demo": self.demo,
             "physical_writes_allowed": self.physical_writes_allowed,
+            "master_on_device": self._master_on_device(),
             "connection_epoch": self._connection_epoch,
             "device": self.device.__dict__,
             "tune_name": self.tune.name,

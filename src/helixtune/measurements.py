@@ -159,19 +159,22 @@ def prediction_issues(m: Measurement, now: Tune) -> list[str]:
     return issues
 
 
-def predict(m: Measurement, now: Tune, grid: np.ndarray = GRID) -> np.ndarray:
+def predict(m: Measurement, now: Tune, grid: np.ndarray = GRID, *, include_master: bool = True) -> np.ndarray:
+    """include_master=False when master gain is not applied to the hardware (a real DSP: the
+    engine never writes the provisional master), so its change is not shown as an acoustic one."""
     measured = np.interp(np.log(grid), np.log(m.freqs), m.spl)
     if m.tune is None or not m.channels:
         return measured
     then = _chain_db(m.tune, m.channels, grid)
     new = _chain_db(now, m.channels, grid)
+    master = now.master_gain_db - m.tune.master_gain_db if include_master else 0.0
     if len(m.channels) == 1:
         c = m.channels[0]
-        return measured + np.clip(new[c], -80, 40) - np.clip(then[c], -80, 40) + now.master_gain_db - m.tune.master_gain_db
+        return measured + np.clip(new[c], -80, 40) - np.clip(then[c], -80, 40) + master
     # several channels in one measurement: scale by the change in their power sum
     p_then = sum(10 ** (np.clip(v, -80, 40) / 10) for v in then.values())
     p_new = sum(10 ** (np.clip(v, -80, 40) / 10) for v in new.values())
-    return measured + 10 * np.log10(p_new / p_then) + now.master_gain_db - m.tune.master_gain_db
+    return measured + 10 * np.log10(p_new / p_then) + master
 
 
 # ---- legacy REW .mdat import --------------------------------------------------------

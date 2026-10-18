@@ -97,7 +97,7 @@
       <div class="dist">
         {#each used as c}
           <label><span><span class="sw" style="background:{ROLE_COLORS[c.role]}"></span>{label(c)}</span>
-            <input type="number" min="0" step="0.5" placeholder="distance" bind:value={dist[c.id]} />
+            <input type="number" min="0" step="0.5" placeholder="distance ({distUnit === 'cm' ? 'cm' : 'in'})" aria-label="{label(c)} distance ({distUnit === 'cm' ? 'cm' : 'inches'})" bind:value={dist[c.id]} />
           </label>
         {/each}
       </div>

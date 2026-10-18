@@ -1101,7 +1101,10 @@ class Engine:
         return safety.check(t, self.policy, previous=previous,
                             driver_limits=equipment.channel_driver_limits(self.design),
                             protections=self.protections,
-                            unmute_levels=self.unmute_levels(previous) if previous is not None else None)
+                            # Bound to the candidate: a reroute/role change in the same edit as the
+                            # unmute must not inherit the old route's remembered level. Protection
+                            # floors are checked on every edit independently of this memory.
+                            unmute_levels=self.unmute_levels(t) if previous is not None else None)
 
     def _advisories(self, t: Tune) -> list[str]:
         return safety.advisories(t, self.policy, driver_limits=equipment.channel_driver_limits(self.design),

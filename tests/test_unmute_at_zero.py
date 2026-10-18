@@ -5,7 +5,7 @@ import pytest
 from conftest import owner_client
 from helixtune.api import create_app
 from helixtune.engine import Engine
-from helixtune.model import Tune
+from helixtune.model import Role, Tune
 
 
 @pytest.fixture
@@ -111,3 +111,21 @@ def test_changed_routing_or_a_reconnect_forgets_the_level(playing):
     assert engine.unmute_levels() == {}
     assert c.patch("/api/channels/B?link=false", json={"mute": False}).status_code == 409
     engine.detach()
+
+
+@pytest.mark.parametrize("change", [lambda ch: setattr(ch, "mix", {"R": 1.0}),
+                                    lambda ch: setattr(ch, "role", Role.TWEETER)])
+def test_reroute_or_role_change_in_the_same_edit_as_unmute_is_refused(playing, change):
+    """Codex review of ba497c7: memory must be checked against the proposed output, not the old one."""
+    from helixtune.engine import SafetyRejected
+    c, engine = playing
+    c.patch("/api/channels/A?link=false", json={"mute": True})
+    before = engine.tune.model_dump()
+
+    def edit(t):
+        change(t.channel("A"))
+        t.channel("A").mute = False
+    with pytest.raises(SafetyRejected, match="no remembered level"):
+        engine.edit("test", "reroute + unmute", edit)
+    assert engine.tune.model_dump() == before                              # not adopted
+    assert c.patch("/api/channels/A?link=false", json={"mute": False}).status_code == 200   # same context: fine

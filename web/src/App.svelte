@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import Notices from './lib/components/Notices.svelte'
   import { app } from './lib/state.svelte'
   import { theme } from './lib/theme.svelte'
   import Header from './lib/components/Header.svelte'
@@ -41,6 +42,7 @@
 {/if}
 
 </main>
+<Notices />
 <div class="toasts" aria-live="polite">
   {#each app.toasts as t (t.id)}
     <div class="toast {t.kind}">{t.text}</div>

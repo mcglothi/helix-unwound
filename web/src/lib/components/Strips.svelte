@@ -33,7 +33,7 @@
         </div>
       </div>
       <div class="btns">
-        <button class:on={c.mute} aria-pressed={c.mute} aria-label="Mute {c.id}" onclick={() => app.patchChannel(c.id, { mute: !c.mute })}>M</button>
+        <button class:on={c.mute} aria-pressed={c.mute} aria-label="Mute {c.id}" onclick={() => app.toggleMute(c.id)}>M</button>
         <button class:on={c.invert} aria-pressed={c.invert} aria-label="Invert {c.id}" onclick={() => app.patchChannel(c.id, { invert: !c.invert })}>Ø</button>
       </div>
     </div>

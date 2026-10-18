@@ -26,6 +26,10 @@ async function api<T = any>(method: string, path: string, body?: unknown): Promi
 }
 
 export interface Toast { id: number; text: string; kind: 'error' | 'info' }
+/** A refused change, kept on screen until dismissed (toasts vanish too quickly to act on). */
+export interface Rejection { reasons: string[] }
+/** Outputs an "Unmute at 0 dB" would touch, with the levels the user is shown. */
+export interface UnmuteReview { cid: string; targets: { id: string; gain_db: number }[] }
 
 class AppState {
   tune = $state<Tune | null>(null)
@@ -39,6 +43,10 @@ class AppState {
   layers = $state({ target: true, measured: true, predicted: true, groups: true, electrical: false })
   snapshots = $state<string[]>([])
   toasts = $state<Toast[]>([])
+  rejection = $state<Rejection | null>(null)
+  /** Bumped on every refused change so edited fields redraw with the real, unchanged values. */
+  revertTick = $state(0)
+  unmuteReview = $state<UnmuteReview | null>(null)
   proposal = $state<Proposal | null>(null)       // the one open for review
   preview = $state<SystemView | null>(null)      // system view if it were applied
   proposalConflicts = $state<string[]>([])       // why the open proposal can no longer be applied
@@ -132,9 +140,43 @@ class AppState {
     try {
       await p
     } catch (e: any) {
-      this.toast(e.message ?? String(e))
+      if (e instanceof ApiError && Array.isArray(e.body?.problems)) this.rejection = { reasons: e.body.problems }
+      else this.toast(e.message ?? String(e))
+      this.revertTick++
     }
     await this.poll()
+  }
+
+  /** Outputs that move together with cid (its link group), cid first. */
+  linkedChannels(cid: string): Channel[] {
+    const chans = this.tune?.channels ?? []
+    const ch = chans.find((c) => c.id === cid)
+    if (!ch) return []
+    return [ch, ...(ch.link_group ? chans.filter((c) => c.link_group === ch.link_group && c.id !== cid) : [])]
+  }
+
+  /** Mute/unmute. Unmuting an output with positive gain is refused by the safety rules, so offer
+   *  a reviewed "Unmute at 0 dB" instead of sending a request that cannot succeed. */
+  toggleMute(cid: string, opts: { link?: boolean } = {}) {
+    const ch = this.tune?.channels.find((c) => c.id === cid)
+    if (!ch) return
+    if (!ch.mute) return this.patchChannel(cid, { mute: true }, opts)
+    const targets = opts.link === false ? [ch] : this.linkedChannels(cid)
+    if (targets.some((c) => c.gain_db > 0)) {
+      this.rejection = null
+      this.unmuteReview = { cid, targets: targets.map((c) => ({ id: c.id, gain_db: c.gain_db })) }
+      return
+    }
+    return this.patchChannel(cid, { mute: false }, opts)
+  }
+
+  confirmUnmuteAtZero() {
+    const review = this.unmuteReview
+    if (!review) return
+    this.unmuteReview = null
+    const reviewed = Object.fromEntries(review.targets.map((t) => [t.id, t.gain_db]))
+    const q = review.targets.length === 1 && this.linkedChannels(review.cid).length > 1 ? '?link=false' : ''
+    return this.run(api('POST', `/api/channels/${review.cid}/unmute-at-zero${q}`, { reviewed_gain_db: reviewed }))
   }
 
   patchChannel(cid: string, fields: Partial<Channel>, opts: { link?: boolean } = {}) {

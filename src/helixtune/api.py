@@ -36,6 +36,11 @@ WEB = Path(__file__).parent / "web"
 LINKED_CHANNEL_FIELDS = frozenset({"gain_db", "mute", "invert"})
 
 
+class UnmuteAtZero(BaseModel):
+    # The gains the user reviewed, per affected output. A mismatch means the review is stale.
+    reviewed_gain_db: dict[str, float]
+
+
 class ChannelPatch(BaseModel):
     mix: dict[str, float] | None = None
     name: str | None = None
@@ -415,6 +420,24 @@ def create_app(engine: Engine) -> FastAPI:
                     setattr(t.channel(other), k, v)
         note = _linked_note(cid, link) if shared else ""
         return engine.edit(_src(request), f"{cid.upper()}: {_fmt(fields)}{note}", f)
+
+    @app.post("/api/channels/{cid}/unmute-at-zero")
+    @agent_allowed
+    def unmute_at_zero(cid: str, body: UnmuteAtZero, request: Request, link: bool = True):
+        """One reviewed edit: unmute an output (and its linked partners) with any positive gain
+        lowered to 0 dB. Never raises gain; every safety check still runs."""
+        engine.tune.channel(cid)
+        reviewed = {k.upper(): v for k, v in body.reviewed_gain_db.items()}
+
+        def f(t):
+            targets = [cid.upper()] + _partners(t, cid, link)
+            if reviewed != {c: t.channel(c).gain_db for c in targets}:
+                raise EngineError("Output levels or links changed since the review; review again. Nothing was changed.")
+            for c in targets:
+                ch = t.channel(c)
+                ch.gain_db = min(ch.gain_db, 0.0)
+                ch.mute = False
+        return engine.edit(_src(request), f"{cid.upper()}: unmute at 0 dB{_linked_note(cid, link)}", f)
 
     @app.put("/api/channels/{cid}/{which}")
     @agent_allowed

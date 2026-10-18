@@ -29,6 +29,7 @@
 </script>
 
 {#if ch}
+  {#key app.revertTick}
   <section class="panel inspector">
     <header>
       <span class="swatch" style="background:{ROLE_COLORS[ch.role]}"></span>
@@ -73,7 +74,7 @@
       </div>
     </div>
     <div class="toggles">
-      <button class:on={ch.mute} aria-pressed={ch.mute} onclick={() => app.patchChannel(ch.id, { mute: !ch.mute })}>Mute</button>
+      <button class:on={ch.mute} aria-pressed={ch.mute} onclick={() => app.toggleMute(ch.id)}>Mute</button>
       <button class:on={ch.invert} aria-pressed={ch.invert} onclick={() => app.patchChannel(ch.id, { invert: !ch.invert })}>Invert polarity</button>
     </div>
 
@@ -131,6 +132,7 @@
       {/each}
     </div>
   </section>
+  {/key}
 {/if}
 
 <style>

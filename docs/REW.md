@@ -67,3 +67,15 @@ discover -> preview -> import created a library measurement, and a repeated impo
 the existing record. The synthetic curve was then deleted from REW. A real microphone
 measurement has not yet been imported. Note: right after launch REW briefly answers
 `/doc.json` with 404 while the API starts; retry after a moment.
+
+**What the API can drive without REW Pro (tested 2026-10-18, REW 5.40 beta 135, Mac muted):**
+`POST /measure/command {"command": "SPL"}` returns **401 "A Pro upgrade license is required
+for this action"** (nothing played), matching the API help ("automated sweep measurements
+requires a Pro upgrade license"; the upgrades page does not mention it). Without Pro:
+`/generator/command` Play/Stop works (signal set with `POST /generator/signal
+{"signal": "pinknoise"}`), and `/rta/command` Start/Stop/"Reset averaging"/"Save current"
+works; "Save current" stores the RTA trace as a REW measurement, which the existing import
+reads. A one-click "Measure this seat" can therefore use pink noise + RTA averaging
+(moving-mic method, common for in-car tuning) without Pro; sweep automation would need Pro.
+Not yet built or tested with a microphone.
+

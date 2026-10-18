@@ -131,3 +131,13 @@ def test_824_truncates_toward_zero_like_pc_tool():
     words = b''.join(word_824(v) for v in (b.b2, b.b1, b.b0, -b.a2, -b.a1))
     assert words == bytes.fromhex('00ffe6b1 fe001528 01000453 ff0014fb 01ffead8')
     assert word_824(-1e-9) == bytes(4)          # toward zero, not floor (which gives ffffffff)
+
+
+def test_butterworth_12_uses_pc_tool_q_071_bit_exact():
+    """Capture 23 (2026-10-18), output A HP Butterworth 12 dB at 60.83 Hz, stage 0 words."""
+    from helixtune.dsp import filters as F
+    from helixtune.dsp.fixed import word_824
+    (bq,), fos = F.crossover_sections(F.XoType.BUTTERWORTH, 12, 60.83, 96000, True, pc_tool_q=True)
+    words = {"B2": bq.b2, "B1": bq.b1, "B0": bq.b0, "A2": -bq.a2, "A1": -bq.a1}
+    captured = {"B2": "00ff4882", "B1": "fe016efc", "B0": "00ff4882", "A2": "ff016e77", "A1": "01fe9080"}
+    assert not fos and {k: word_824(v).hex() for k, v in words.items()} == captured

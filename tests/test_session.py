@@ -197,3 +197,22 @@ def test_drain_is_bounded_on_a_chattering_line():
     assert got == b""
     c = C(Chatter())
     assert len(c.drain()) <= C.DRAIN_MAX_BYTES + 256
+
+
+def test_every_sync_burst_is_followed_by_the_post_sync_pause():
+    """2026-10-18 live test: without ~0.1 s after a sync burst the first command at the new
+    rate went unanswered and the session failed to open."""
+    from helixtune.protocol import frame
+    from helixtune.protocol.session import POST_SYNC_S
+    dev, events = EmulatedDevice(), []
+    write = dev.write
+    dev.write = lambda data: (events.append("SYNC" if bytes(data) == frame.SYNC_FRAME else "cmd"), write(data))[1]
+
+    def set_baud(b):
+        dev.baudrate = b
+    s = Session(Client(dev, allow_writes=True, timeout=0.05), set_baud, sleep=events.append)
+    s.open()
+    s.close()
+    syncs = [i for i, e in enumerate(events) if e == "SYNC"]
+    assert len(syncs) == 5 and POST_SYNC_S >= 0.1          # 4 in open, 1 in close
+    assert all(events[i + 1] == POST_SYNC_S for i in syncs)

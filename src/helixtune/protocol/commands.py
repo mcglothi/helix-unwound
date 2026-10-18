@@ -75,6 +75,22 @@ def read_stored(address: int, length: int) -> bytes:
     return bytes([0x32, 0x03, address >> 8, address & 0xff, length]) + bytes(padding)
 
 
+# PC-Tool session commands (2026-10-17 captures).
+SESSION_START = bytes([0x09, 0x01])
+SESSION_END = bytes([0x09, 0x00])
+KEEPALIVE = bytes.fromhex("02 00 22 b8 00 00 00 00")
+# 2026-10-18 live test: stored reads (32 03) get no reply until 32 01 06 00 has been sent and
+# echoed; the selection then persisted across sessions. PC-Tool sends it before its first
+# stored read. The meaning of 06 is not decoded, so only this exact payload is ever sent.
+SELECT_STORED = bytes.fromhex("32 01 06 00")
+
+
+def is_backup_session_command(payload: bytes) -> bool:
+    """The commands a stored-preset backup may add to identify and bounded 32 03 reads."""
+    return payload in (SESSION_START, SESSION_END, KEEPALIVE, SELECT_STORED,
+                       set_baud(BaudCode.HIGH), set_baud(BaudCode.LOW))
+
+
 def is_safe_read(payload: bytes) -> bool:
     if payload == identify():
         return True

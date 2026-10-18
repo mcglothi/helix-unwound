@@ -1,4 +1,5 @@
-"""Bounded, explicit stored-memory reads. No session, baud, slot or write commands."""
+"""Bounded, explicit stored-memory reads. backup() adds PC-Tool's session and stored-memory
+selection (32 01 06 00); never parameter writes or preset-storage commands."""
 from __future__ import annotations
 
 import hashlib
@@ -89,6 +90,31 @@ def read(client: Client, *, timeout: float = 60) -> StoredPreset:
     if first.name_bytes != second.name_bytes or first.blob != second.blob:
         raise StoredPresetError('Stored preset changed while reading; no backup was accepted. Retry when preset selection is stable.')
     return first
+
+
+def backup(client: Client, set_host_baud, *, sleep=time.sleep, timeout: float = 60) -> StoredPreset:
+    """Read the stored preset the way the 2026-10-18 live test did: PC-Tool's session,
+    32 01 06 00 (must be echoed), the bounded double read, then close back to 19200.
+    Without the selection the DSP ignored 32 03 at either rate."""
+    from .protocol import commands
+    from .protocol.session import Session
+    with client.stored_backup_mode():
+        session = Session(client, set_host_baud, sleep=sleep)
+        try:
+            session.open()
+        except Exception:
+            try:
+                session.close()
+            except Exception:
+                pass
+            raise
+        try:
+            reply = client.transact(commands.SELECT_STORED)
+            if reply.payload != commands.SELECT_STORED:
+                raise StoredPresetError('Stored-memory selection was not acknowledged; nothing was read')
+            return read(client, timeout=timeout)
+        finally:
+            session.close()
 
 
 def save(path, preset: StoredPreset) -> None:

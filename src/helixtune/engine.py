@@ -294,11 +294,15 @@ class Engine:
                 raise EngineError("The demo workstation does not contain a hardware stored preset")
             if self.client is None or self.device.writes_enabled:
                 raise EngineError("Connect read-only before backing up a stored preset")
+            from .emulator import EmulatedDevice
+            quick = isinstance(self.client.t, EmulatedDevice)
+            transport = self.client.t
             try:
-                preset = stored_preset.read(self.client)
+                preset = stored_preset.backup(self.client, lambda baud: setattr(transport, "baudrate", baud),
+                                              **({"sleep": lambda s: None} if quick else {}))
             except TimeoutError as exc:
-                raise EngineError("No stored-preset reply at the current read-only connection. No session or baud-switch fallback was attempted; 19200-baud access still needs the live test.") from exc
-            except ValueError as exc:
+                raise EngineError("The DSP stopped answering during the stored-preset backup. The session was closed; nothing was written. Check the cable and retry.") from exc
+            except (ValueError, SessionError) as exc:
                 raise EngineError(str(exc)) from exc
             directory = self.data_dir / "backups"
             directory.mkdir(mode=0o700, exist_ok=True)
@@ -334,6 +338,10 @@ class Engine:
         deliberately overwrites the managed parameters again.
         """
         self._require_writable()
+        blocked = sorted(set(img) & self.mapping.protected)
+        if blocked:
+            raise EngineError("refusing to write Director/remote volume parameters "
+                              + ", ".join(f"0x{a:04x}" for a in blocked) + "; nothing was written")
         if not full and not self.device.baselined:
             raise EngineError("device has no baseline; a confirmed full overwrite is required")
         changes = mapping.diff(None if full else self.applied_image, img)

@@ -7,6 +7,7 @@ import sys
 
 from .protocol import commands
 from .protocol.client import Client
+from .protocol.session import SessionError
 
 FTDI_VID = 0x0403
 ATF_VID = 0x2E4F
@@ -61,7 +62,8 @@ def cmd_probe(args) -> int:
 
 
 def cmd_backup_stored(args) -> int:
-    """Explicit port and output required; no auto-discovery, session or baud switch."""
+    """Explicit port and output required; no auto-discovery. Opens PC-Tool's session and
+    stored-memory selection only for the read (validated live 2026-10-18); never writes."""
     import serial
     from pathlib import Path
     from . import stored_preset
@@ -76,19 +78,20 @@ def cmd_backup_stored(args) -> int:
         with serial.Serial(args.port, commands.LOW_HOST_BAUD, bytesize=8, parity="N", stopbits=1,
                            rtscts=False, xonxoff=False, timeout=0.05) as transport:
             client = Client(transport, timeout=1)
-            if client.identify().model_type != commands.PRO_MK2:
-                raise ValueError("Connected device was not identified as DSP PRO MK2")
-            preset = stored_preset.read(client)
+            preset = stored_preset.backup(client, lambda baud: setattr(transport, "baudrate", baud))
         stored_preset.save(target, preset)
     except TimeoutError:
-        print("Read timed out. No session/baud fallback was attempted; 19200-baud stored reads need live validation.", file=sys.stderr)
+        print("Read timed out; the session was closed and the DSP returned to 19200. Nothing was written.", file=sys.stderr)
+        return 1
+    except SessionError as exc:
+        print(f"Stored-preset backup failed: {exc}", file=sys.stderr)
         return 1
     except (OSError, ValueError) as exc:
         print(f"Stored-preset backup failed: {exc}", file=sys.stderr)
         return 1
     print(f"Stored preset backed up to {target} ({len(preset.blob)} bytes, SHA256 {preset.sha256}).")
     print(f"XML SHA256 {preset.xml_sha256}")
-    print("This backs up stored XML, not unsaved current RAM. No preset was selected, loaded or written.")
+    print("This backs up stored XML, not unsaved current RAM. Nothing was loaded or written.")
     return 0
 
 

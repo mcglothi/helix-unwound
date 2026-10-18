@@ -24,6 +24,13 @@ XO_FIRST_ORDER_SLOTS = 2
 STAGES_PER_EQ_BLOCK = 15
 
 
+# Director/remote (URC) volume parameters and their slew settings. The remote owns these;
+# HelixTune never writes them. 2026-10-18: Digital (optical) Volume was found at minimum with
+# no captured write explaining it, so the engine refuses any write that touches this set.
+PROTECTED_PATTERN = (r"^URC_FUNCTION_(MASTER|SUB|OPTO|AUX)VOLUME"
+                     r"|VOLUMEURC_SLEW_MODE$|^MASTERVOLUME(OPTOOUT)?_SLEW_MODE$")
+
+
 class MappingError(ValueError):
     pass
 
@@ -80,8 +87,11 @@ def channel_addrs(pm: ParamMap, idx: int) -> ChannelAddrs:
 
 
 class DeviceMapping:
+    protected: frozenset[int] = frozenset()
+
     def __init__(self, pm: ParamMap):
         self.pm = pm
+        self.protected = frozenset(pm.find(PROTECTED_PATTERN).values())
         self.channels = [channel_addrs(pm, i) for i in range(len(CHANNELS))]
         self.master = _one(pm, r"^GAIN1_.*GAIN$")  # PROVISIONAL: GAIN1 = master
 

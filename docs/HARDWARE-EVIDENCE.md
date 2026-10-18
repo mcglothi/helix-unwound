@@ -50,8 +50,10 @@ preset includes a name and qCompress XML data. That is promising for a future
 **stored-preset backup/import** workflow. It cannot yet be called a live RAM backup:
 unsaved RAM edits may differ. The stored preset found in the captures is newer
 than the old local backups, so neither those backups nor its timestamp establish
-the exact current RAM tune. A bounded stored-memory reader is now available as a separate explicit backup
-action; no session, baud-switch, selection or store command is enabled by it.
+the exact current RAM tune. The backup action (CLI `backup-stored`, API, engine) opens
+PC-Tool's session and sends the stored-memory selection `32 01 06 00` before the bounded
+reads - see the 2026-10-18 live results below. It never sends parameter writes, `04`/`05`
+preset-storage commands, or any other `32` subcommand.
 
 ## Quantization and link groups (2026-10-17, Claude Code)
 
@@ -92,8 +94,93 @@ check. Idle: keep-alive `02 00 22 b8 00 00 00 00` echoed (engine pinger every 0.
 `0A 2F`, sync, ~0.5 s, host 19200. Baud acks are truncated on the wire and are drained, not
 validated. The engine opens a session only for write-enabled attaches; read-only attaches
 send identify only. The emulator models its line rate (frames at the wrong host rate are
-noise) and the captured truncated acks. Physical transports still reject every session byte
-(`Client` gate) - enabling them is a separate, supervised step after the live read test.
+noise) and the captured truncated acks. Physical transports reject every session byte
+(`Client` gate) except inside `Client.stored_backup_mode()`, which admits exactly the backup
+session (start/end, baud switch, sync, keep-alive, `32 01 06 00`) and never `03` writes.
 
 Director interaction, Save&Store/flash writes, master volume, routing and the
 unsupported operation families remain explicit follow-up work.
+
+## Live hardware test (2026-10-18, Claude Code; Tim supervising, audio muted)
+
+Mac (FT232R via USB-C hub) and the Dell running PC-Tool, one at a time, on the truck's DSP.
+
+**Stored-preset backup needs a session and a selection.**
+- Identify answers at 19200 without a session (179 bytes, framing as captured).
+- `32 03` got **no reply** at 19200 without a session, and none inside a session either,
+  until `32 01 06 00` was sent. The DSP echoes `32 01 06 00`; the reads then answer.
+- The selection **persists**: later the same day, `32 03` at 19200 without a session
+  answered. The emulator models both (silent until selected, then persistent).
+- Backup XML was byte-identical (30,852 bytes) to the copy extracted from the 2026-10-17
+  capture, and identical again after the supervised write below. The flash was not changed.
+- PC-Tool's `13 00 40` / `13 30 10` connect commands are **reads**. Both return erased
+  memory (all `ff`), the same Friday and today. `06`, `04`, `17` and `32 00` connect replies
+  were also identical across days.
+
+**Session timing.** On macOS a command sent straight after the post-switch sync burst went
+unanswered and the session failed to open. With ~0.1 s after each sync burst it opened every
+time (`Session.POST_SYNC_S`). Opening a session (ours or PC-Tool's), closing PC-Tool, and
+unplugging the USB cable each cause a ~1 s audio dropout. That is harmless and expected.
+
+**First supervised write.** `GAINA` (0x232c) 5.00 -> 4.00 dB -> 5.00 dB inside a session:
+both `03` writes echoed the first 5 bytes, keep-alives answered throughout, and the stored
+XML read back unchanged. The 4.00 dB word equals PC-Tool's captured word.
+
+**DSP state persistence.** Unsaved RAM changes survived an ignition cycle, so the DSP
+keeps working memory while the truck is off. PC-Tool's connect + preset load replaces RAM
+with the stored preset, which reverts unsaved changes.
+
+**Director controls never cross USB.** Turning the Director knob and changing its menu
+volumes while PC-Tool was connected produced no USB traffic. The Director talks to the DSP
+directly.
+
+### Incident: Digital Volume at minimum (unexplained)
+
+After the morning's sessions and a power cycle, the DSP passed no audio (about 1 s of audio
+on each preset/input switch, then silence). The Director's *Menu > Unused Functions > Digital
+Volume* (the optical-input volume, `URC_FUNCTION_OPTOVOLUMEVALUE`, 0x22f9) was at minimum.
+Raising it restored audio. Nobody listened after the 2026-10-17 session, so the window is
+Friday's PC-Tool session through Sunday morning.
+
+Reproduction attempts, each followed by reading Digital Volume and listening, were all
+negative: identify; session open/keep-alive/close; both wrong-baud identify probes; the full
+session trace; session + `32 01 06 00` + stored reads without `32 0f`; the gain write;
+session + `32 0f`; the original no-session `backup-stored`; a session open without the sync
+pause; PC-Tool connect/load/disconnect; a cold start; a long SYNC-volume mute (dismissed
+from experience). No captured session (21 captures) ever wrote a Director volume parameter.
+Possibly the Director was set by accident during testing. It is recorded as unexplained.
+
+Safeguards: every truck test starts and ends with reading Digital Volume and confirming
+audio. `DeviceMapping.protected` (matched by name: URC master/sub/opto/aux volume
+values and selectors, and their slew modes, 12 parameters on 4.80b) is refused by the engine
+before any write.
+
+### Capture 23: slopes, routing, channel type
+
+Output A high-pass at 60.83 Hz; each write burst compared with HelixTune's render of Tim's
+stored tune with the same change:
+
+| Setting | Result |
+|---|---|
+| Off, LR12, LR24, BW6, BW18 | bit-exact |
+| BW12 | bit-exact with Q 0.71 (PC-Tool's constant; LR24 halves use .707), now implemented |
+| Bessel 24 (passed through while changing characteristic) | right shape, ~1000 LSB off: PC-Tool's Bessel constants differ |
+| LR36 | three biquads at 60.8 Hz with Q ~0.57 / 0.74 / 1.17, not BW3 squared; not derived |
+
+PC-Tool offers 6/18 dB only with Butterworth. Linkwitz steps 0/12/24/36. The first-order
+section goes to `FILTERS__PHASE_LP1_<ch>_..._1` for the high-pass, confirming the mapping's
+first-order slot layout.
+
+**Routing.** Removing Digital In L from Subwoofer 1 and adding it back wrote
+`MAINMATRIX_..._VOL08{00..11}` (row = output I, inputs 0/1 = 0.5/0.5 -> 0/1.0 -> 0.5/0.5,
+8.24, other inputs zeroed). **HelixTune's mapping currently writes channel mix to
+`OPTO_MATRIX` (marked PROVISIONAL).** Which matrix PC-Tool's Main vs Digital Routing tab
+edits, and how the two combine, must be settled by a capture before routing writes are
+enabled.
+
+**Channel type.** Assigning Output G a type (with the offered HP/LP preset) wrote its
+crossover sections and `SUB_RC_GAIN_NX1_11_7` (0x231f).
+
+Still uncaptured: master gain semantics (`GAIN1` is a provisional master), Save&Store,
+Bessel/LR36 and higher slopes, and the Main vs Digital Routing matrix question.
+

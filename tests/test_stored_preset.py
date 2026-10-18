@@ -32,8 +32,12 @@ class StoredTransport:
         self.closed = False
     def reset_input_buffer(self): self.out.clear()
     def write(self, raw):
+        if bytes(raw) == frame.SYNC_FRAME: self.log.append(b'SYNC'); return len(raw)
         request,_ = frame.decode_tx(raw); p = request.payload; self.log.append(p)
         if p == b'\x08': reply = default_identify_payload()
+        elif commands.is_backup_session_command(p):
+            if p[0] in (0x09, 0x0a): return len(raw)   # session start/end silent; baud ack drained
+            reply = p                                   # keep-alive and 32 01 06 00 are echoed
         else:
             assert commands.is_safe_read(p) and p[:2] == b'\x32\x03', 'unexpected state-changing command'
             address = int.from_bytes(p[2:4],'big'); count = p[4]
@@ -47,6 +51,13 @@ class StoredTransport:
     def close(self): self.closed = True
     def __enter__(self): return self
     def __exit__(self,*args): self.close()
+
+
+@pytest.fixture(autouse=True)
+def no_settle_sleeps(monkeypatch):
+    from helixtune.protocol import session
+    for name in ('SETTLE_S', 'ACK_WAIT_S', 'POST_SYNC_S'):
+        monkeypatch.setattr(session, name, 0)
 
 
 def test_backup_is_exact_blob_and_xml_with_two_matching_reads():
@@ -160,6 +171,10 @@ def test_cli_explicit_read_only_backup_without_any_auto_connection(tmp_path,monk
     assert settings['args']==('test-only',19200)
     assert settings['rtscts'] is False and settings['xonxoff'] is False
     assert target.read_bytes()==blob() and transport.closed
+    log=transport.log; first_read=next(i for i,p in enumerate(log) if p[:2]==b'\x32\x03')
+    assert log[first_read-1]==commands.SELECT_STORED and commands.SESSION_START in log[:first_read]
+    assert log[-3:]==[commands.SESSION_END,commands.set_baud(commands.BaudCode.LOW),b'SYNC']
+    assert transport.baudrate==19200 and not any(p[:1] in (b'\x03',b'\x04',b'\x05') for p in log)
     count=len(transport.log)
     assert main(['backup-stored','--port','test-only','--output',str(target)])==2
     assert len(transport.log)==count
@@ -210,20 +225,24 @@ def test_private_capture_stored_xml_replay_if_available(monkeypatch):
     assert checked>0
 
 
-def test_failed_read_creates_no_backup_and_never_tries_a_session_or_baud_fallback(tmp_path,synthetic_mapping):
+def test_failed_read_creates_no_backup_retries_nothing_and_closes_the_session(tmp_path,synthetic_mapping):
     class SilentStored(StoredTransport):
         def write(self,raw):
-            request,_=frame.decode_tx(raw)
-            if request.payload[:2]==b'\x32\x03':
-                self.log.append(request.payload);return len(raw)
+            if bytes(raw)!=frame.SYNC_FRAME:
+                request,_=frame.decode_tx(raw)
+                if request.payload[:2]==b'\x32\x03':
+                    self.log.append(request.payload);return len(raw)
             return super().write(raw)
     transport=SilentStored();engine=Engine(mapping=synthetic_mapping,data_dir=tmp_path)
     engine.attach(Client(transport,timeout=.001),'serial','test-only');transport.log.clear()
     before=engine.tune.model_dump()
     with owner_client(create_app(engine)) as owner:
         response=owner.post('/api/device/stored-preset/backup')
-        assert response.status_code==400 and 'No session or baud-switch fallback' in response.json()['detail']
-    assert transport.log==[bytes.fromhex('32 03 00 00 12') + bytes(18)]
+        assert response.status_code==400 and 'stopped answering' in response.json()['detail']
+    reads=[p for p in transport.log if p[:2]==b'\x32\x03']
+    assert reads==[bytes.fromhex('32 03 00 00 12') + bytes(18)]                 # one attempt, no retry
+    assert transport.log[-3:]==[commands.SESSION_END,commands.set_baud(commands.BaudCode.LOW),b'SYNC']
+    assert transport.baudrate==19200 and not any(p[:1] in (b'\x03',b'\x04',b'\x05') for p in transport.log)
     assert not (tmp_path/'backups').exists() and engine.tune.model_dump()==before
 
 

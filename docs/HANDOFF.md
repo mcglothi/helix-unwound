@@ -1,7 +1,7 @@
 # helixTune handoff
 
-Last Updated: 2026-10-17
-Status: ⚠️ Captured protocol, quantization, link groups, safety tiers and emulator-only session layer reviewed; live read-only Mac/DSP backup test pending (Tim, 2026-10-18)
+Last Updated: 2026-10-18
+Status: ⚠️ Live hardware test done 2026-10-18 (session-based stored backup, first supervised write; see HARDWARE-EVIDENCE); session/backup fixes and Director-volume guard await Codex review; physical engine sessions still disabled
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -313,13 +313,16 @@ partial-open/close failures on hardware. Physical transports still reject every 
 
 ## Next tasks
 
-1. **Live read-only test (Tim, 2026-10-18):** `helixtune backup-stored` from the Mac on the DSP
-   (USB-C adapter); confirm 19200 session-free stored reads and byte equality with the extracted
-   2022 preset. Then plan the first supervised physical session/write (audio muted, power cycle as undo).
+1. **After the 2026-10-18 live test:** stored backup now opens PC-Tool's session and sends
+   `32 01 06 00` (the only way the DSP answered `32 03`); `Session` pauses 0.1 s after each sync;
+   writes to Director volume parameters are refused. Before enabling physical engine sessions:
+   bound the serial read timeout used by drain, force reconnect after a heartbeat failure, handle
+   partial open/close, and start/end every truck test by reading the Director's Digital Volume
+   (see the unexplained incident in HARDWARE-EVIDENCE).
 2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
 4. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Portable CI is now implemented (milestone 8); settle a license before inviting community code contributions.
-5. Hardware protocol: framing, write command, EQ/crossover/delay/gain/mute/invert addresses and maths, quantization, link groups and the session sequence are confirmed by the 2026-10-17 captures. Still to capture before enabling them: master volume, routing matrix writes, 6/18 dB first-order slopes, Save&Store/flash and Director interaction.
+5. Hardware protocol: framing, write command, EQ/crossover/delay/gain/mute/invert addresses and maths, quantization, link groups and the session sequence are confirmed by the 2026-10-17 captures. 6/18 dB first-order slopes and BW12 (Q 0.71) are bit-exact as of capture 23. Still open before enabling them: routing (PC-Tool wrote MAINMATRIX while the mapping uses OPTO_MATRIX), Bessel and LR36 constants, master gain semantics, Save&Store/flash. Director controls never cross USB.
 6. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 
 Work while hardware captures are pending: next measurement capture planning/verification

@@ -160,7 +160,9 @@ def crossover_sections(kind: XoType, slope_db: int, fc: float, fs: float, highpa
             bqs.append(sec(fc, 0.5, fs))
         return bqs, fos
     if kind is XoType.BUTTERWORTH:
-        for q in qs(order):
+        # Captured 2026-10-18: PC-Tool's Butterworth 12 dB uses Q 0.71 (bit-exact), while its
+        # LR24 halves use .707. Higher Butterworth orders are not yet captured cleanly.
+        for q in ([0.71] if pc_tool_q and order == 2 else qs(order)):
             bqs.append(sec(fc, q, fs))
         if order % 2:
             fos.append(_first(fc, fs, highpass))

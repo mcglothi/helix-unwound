@@ -10,8 +10,9 @@ Idle: keep-alive 02 00 22 b8 00 00 00 00, echoed unchanged.
 Close (capture 17-disconnect): 09 00, 0A 2F, sync, wait ~0.5 s, host -> 19200.
 
 Baud-change acknowledgements arrive truncated while the line rate changes; they are
-drained, not validated. Physical transports remain gated by Client: this module is
-exercised against the emulator until a supervised live test.
+drained, not validated. Validated live on 2026-10-18 (open, keep-alive, close; a supervised
+gain write). Physical transports stay gated by Client: only a stored-preset backup may open a
+session on real hardware, and parameter writes remain disabled there.
 """
 from __future__ import annotations
 
@@ -21,13 +22,16 @@ from typing import Callable
 from . import commands, frame
 from .client import Client
 
-KEEPALIVE = bytes.fromhex("02 00 22 b8 00 00 00 00")
-SESSION_START = bytes([0x09, 0x01])
-SESSION_END = bytes([0x09, 0x00])
+KEEPALIVE = commands.KEEPALIVE
+SESSION_START = commands.SESSION_START
+SESSION_END = commands.SESSION_END
 BAUD_HIGH = commands.set_baud(commands.BaudCode.HIGH)
 BAUD_LOW = commands.set_baud(commands.BaudCode.LOW)
 SETTLE_S = 0.5       # PC-Tool waits ~500 ms between the sync burst and the host baud switch
 ACK_WAIT_S = 0.05
+# 2026-10-18 live test (macOS, FT232R): a command sent straight after a sync burst at the new
+# rate went unanswered; with this pause the session opened every time.
+POST_SYNC_S = 0.1
 
 
 class SessionError(RuntimeError):
@@ -45,11 +49,15 @@ class Session:
         self.info: commands.DeviceInfo | None = None
 
     # -- low-level steps -----------------------------------------------------------------
+    def _sync(self) -> None:
+        self.client.send_sync()
+        self.sleep(POST_SYNC_S)
+
     def _switch(self, code_payload: bytes, host_baud: int) -> None:
         self.client.send(code_payload)
         self.sleep(ACK_WAIT_S)
         self.client.drain()                 # truncated ack at the rate change
-        self.client.send_sync()
+        self._sync()
         self.sleep(SETTLE_S)
         self.set_host_baud(host_baud)
 
@@ -67,7 +75,7 @@ class Session:
         self.sleep(ACK_WAIT_S)
         self.client.drain()
         self._switch(BAUD_HIGH, self.high_baud)
-        self.client.send_sync()
+        self._sync()
         self.keepalive()                              # proves the high-speed link answers
         self.open_, self.info = True, info
         return info

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Protocol
+from contextlib import contextmanager
+from typing import Iterator, Protocol
 
 from . import commands, frame
 
@@ -23,6 +24,17 @@ class Client:
         self.t = transport
         self.allow_writes = allow_writes
         self.timeout = timeout
+        self._backup_mode = False
+
+    @contextmanager
+    def stored_backup_mode(self) -> Iterator[None]:
+        """Let a physical transport carry the session commands a stored-preset backup needs
+        (session start/end, baud switch, sync, keep-alive, 32 01 06 00). Never parameter writes."""
+        self._backup_mode = True
+        try:
+            yield
+        finally:
+            self._backup_mode = False
 
     def _read_frame(self, timeout: float) -> frame.Frame:
         buf = bytearray()
@@ -47,8 +59,9 @@ class Client:
     def _gate(self, payload: bytes) -> None:
         if not payload:
             raise ValueError("empty command")
-        if self._physical() and not commands.is_safe_read(payload):
-            raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
+        if self._physical() and not (commands.is_safe_read(payload)
+                                     or (self._backup_mode and commands.is_backup_session_command(payload))):
+            raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads (plus the backup session); all other commands remain disabled")
         if payload[0] in (0x04, 0x05):
             raise WritesDisabled("Commands 04/05 are preset-storage operations, not RAM access; unsupported")
         if payload[0] in commands.MUTATING and not self.allow_writes:
@@ -68,7 +81,7 @@ class Client:
 
     def send_sync(self) -> None:
         """The 10 x 42 00 burst PC-Tool sends around every baud change."""
-        if self._physical():
+        if self._physical() and not self._backup_mode:
             raise WritesDisabled("Physical transports permit only identify and bounded stored-preset reads; all other commands remain disabled")
         self.t.write(frame.SYNC_FRAME)
 

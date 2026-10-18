@@ -55,6 +55,8 @@ class EmulatedDevice:
         self.stored[:STORED_NAME_LEN] = name
         self.stored[STORED_NAME_LEN:STORED_NAME_LEN + len(stored_blob)] = stored_blob
         self.session_open = False
+        # 2026-10-18 hardware: 32 03 is silent until 32 01 06 00; the selection then persists.
+        self.stored_selected = False
         # Line rate: the DSP and the host must agree, or bytes arrive as garbage.
         self.device_baud = commands.LOW_HOST_BAUD
         self.baudrate = commands.LOW_HOST_BAUD    # host side, set by the session layer
@@ -102,7 +104,15 @@ class EmulatedDevice:
             return None
         if cmd == STATUS:
             return bytes([STATUS, 0x06, 0, 0, 0, 0, 0x02, 0x02])
+        if p == commands.SELECT_STORED:
+            self.stored_selected = True
+            return p                   # echoed
+        if cmd == STORED and p[1:2] == b"\x0f":
+            return p                   # captured echo; meaning unknown
         if cmd == STORED and len(p) >= 5 and p[1] == 0x03:
+            if not self.stored_selected:
+                return None            # no reply before the selection
+
             addr, n = int.from_bytes(p[2:4], "big"), p[4]
             if addr + n > len(self.stored):
                 return bytes([cmd, 0xFF])

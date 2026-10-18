@@ -57,6 +57,7 @@ class EmulatedDevice:
         self.session_open = False
         # 2026-10-18 hardware: 32 03 is silent until 32 01 06 00; the selection then persists.
         self.stored_selected = False
+        self.keepalive_tail = 0        # set nonzero to model a DSP playing audio
         # Line rate: the DSP and the host must agree, or bytes arrive as garbage.
         self.device_baud = commands.LOW_HOST_BAUD
         self.baudrate = commands.LOW_HOST_BAUD    # host side, set by the session layer
@@ -98,7 +99,8 @@ class EmulatedDevice:
     def _handle(self, p: bytes) -> bytes | None:
         cmd = p[0]
         if cmd == KEEPALIVE:
-            return p  # echoed unchanged
+            # echoed; the last byte is a live value on hardware (nonzero while audio plays)
+            return p[:-1] + bytes([self.keepalive_tail]) if len(p) == 8 else p
         if cmd == SESSION and len(p) == 2:
             self.session_open = p[1] == 1
             return None

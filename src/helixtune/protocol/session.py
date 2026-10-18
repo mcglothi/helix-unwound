@@ -91,10 +91,14 @@ class Session:
         self.open_, self.info = True, info
         return info
 
-    def keepalive(self) -> None:
+    def keepalive(self) -> int:
+        """The DSP echoes the first 7 bytes; the last byte is a live value. It was always 00 with
+        the audio muted (2026-10-17) and ranged 00-10 with music playing (2026-10-18, ~1 in 6
+        replies to PC-Tool, which ignores it). Returns that byte; meaning not decoded."""
         reply = self.client.transact(KEEPALIVE)
-        if reply.payload != KEEPALIVE:
+        if len(reply.payload) != len(KEEPALIVE) or reply.payload[:-1] != KEEPALIVE[:-1]:
             raise SessionError(f"keep-alive not echoed (got {reply.payload.hex(' ')})")
+        return reply.payload[-1]
 
     def close(self) -> None:
         """Always tries to leave the DSP and host at 19200, even after errors."""

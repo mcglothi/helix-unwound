@@ -279,3 +279,30 @@ def test_physical_ports_need_a_short_read_timeout():
             Client(Port(bad))
     Client(Port(0.05))
     Client(Recording())                                  # fakes without a timeout attribute
+
+
+def test_keepalive_accepts_the_live_last_byte_but_not_other_changes():
+    """2026-10-18 live: with music playing the DSP's echo ended in 00..10; PC-Tool ignored it.
+    A strict 8-byte check tripped needs_reconnect on the first live connection."""
+    dev = EmulatedDevice()
+    dev, _, s = make(dev)
+    s.open()
+    for tail in (0x01, 0x10, 0xFF):
+        dev.keepalive_tail = tail
+        assert s.keepalive() == tail
+    s.close()
+    dev2 = BadEcho()                                       # bytes 2-3 corrupted: still refused
+    dev2, _, s2 = make(dev2)
+    with pytest.raises(SessionError):
+        s2.open()
+
+
+def test_engine_stays_connected_while_audio_plays(synthetic_mapping, tmp_path):
+    from helixtune.engine import Engine
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path, keepalive_s=0.02)
+    dev = EmulatedDevice()
+    dev.keepalive_tail = 0x03
+    engine.attach(Client(dev, allow_writes=True, timeout=0.05), "emulator")
+    assert wait_for(lambda: sum(1 for c in sent(dev) if c[:1] == H("02")) >= 4)
+    assert not engine.device.needs_reconnect and engine.device.sync_state != "uncertain"
+    engine.detach()

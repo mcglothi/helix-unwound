@@ -171,16 +171,20 @@ PC-Tool offers 6/18 dB only with Butterworth. Linkwitz steps 0/12/24/36. The fir
 section goes to `FILTERS__PHASE_LP1_<ch>_..._1` for the high-pass, confirming the mapping's
 first-order slot layout.
 
-**Routing.** Removing Digital In L from Subwoofer 1 and adding it back wrote
-`MAINMATRIX_..._VOL08{00..11}` (row = output I, inputs 0/1 = 0.5/0.5 -> 0/1.0 -> 0.5/0.5,
-8.24, other inputs zeroed). **HelixTune's mapping currently writes channel mix to
-`OPTO_MATRIX` (marked PROVISIONAL).** Which matrix PC-Tool's Main vs Digital Routing tab
-edits, and how the two combine, must be settled by a capture before routing writes are
-enabled.
+**Routing (captures 23, 24a, 24b).** Removing/re-adding Digital In L on Subwoofer 1, on the
+Main Routing tab and again on the Digital Routing tab, and setting it to 40% (double-click),
+all wrote the same thing: `MAINMATRIX_..._VOL08{00..11}`, one word per write. Row = output I,
+input 00/01 = Digital In L/R as linear 8.24 (40% = `0x666666`, our encoding matches), the
+other ten inputs zeroed. Changing L did not change R. Removing a source makes PC-Tool
+renormalise the remaining one to 100%. `OPTO_MATRIX` was never written live. The stored
+preset holds the same routing in both the 12x12 main matrix (`Route/R INS=12 AOM=1`, G =
+out*12+in) and the 2-input matrix (`AOM=9`). **HelixTune now writes channel mix to the
+main-matrix row (L/R in inputs 0/1, the rest 0) and imports from the main matrix**, falling
+back to `AOM=9`, with warnings for disagreement or non-digital inputs.
 
 **Channel type.** Assigning Output G a type (with the offered HP/LP preset) wrote its
 crossover sections and `SUB_RC_GAIN_NX1_11_7` (0x231f).
 
 Still uncaptured: master gain semantics (`GAIN1` is a provisional master), Save&Store,
-Bessel/LR36 and higher slopes, and the Main vs Digital Routing matrix question.
+Bessel/LR36 and higher slopes, and analog-input routing (inputs 2-11 of the main matrix).
 

@@ -22,6 +22,8 @@ NEGATE_A = True  # captured coefficient storage negates A1/A2
 XO_BIQUAD_SLOTS = 7
 XO_FIRST_ORDER_SLOTS = 2
 STAGES_PER_EQ_BLOCK = 15
+MAIN_MATRIX_INPUTS = 12
+MIX_INPUTS = ("L", "R")   # main-matrix inputs 0/1 (Digital In L/R); other inputs render as 0
 
 
 # Director/remote (URC) volume parameters and their slew settings. The remote owns these;
@@ -81,8 +83,11 @@ def channel_addrs(pm: ParamMap, idx: int) -> ChannelAddrs:
         invert=_one(pm, rf"^DELAY__PHASE_SWITCH_INV{cid}_.*INVERT$"),
         gain=_one(pm, rf"^GAIN_GAIN{cid}_.*GAIN$"),
         mute=_one(pm, rf"^MUTE{cid}_.*MUTE$"),
-        # PROVISIONAL: optical-input matrix VOL{out:02d}{in:02d}; matches the .afpx 2-input route layout
-        mix={name: _one(pm, rf"^OPTO_MATRIX_OPTOMIXER_.*VOL{idx:02d}{n:02d}$") for n, name in enumerate(("L", "R"))},
+        # Captures 23/24 (2026-10-18): PC-Tool's routing edits on either IO tab write the main
+        # matrix row VOL{out:02d}{in:02d}, inputs 00/01 = Digital In L/R, and zero the other 10
+        # inputs of the row. The 2-input OPTO_MATRIX is never written live.
+        mix={(MIX_INPUTS[n] if n < len(MIX_INPUTS) else f"in{n}"): _one(pm, rf"^MAINMATRIX_.*VOL{idx:02d}{n:02d}$")
+             for n in range(MAIN_MATRIX_INPUTS)},
     )
 
 

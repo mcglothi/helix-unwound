@@ -98,3 +98,16 @@ def test_afpx_import_reads_link_groups_and_rejects_odd_values():
     assert t.channel("B").link_group == 0 and any("link group" in w for w in rep.warnings)
     t, _ = afpx.to_tune(_preset("2", "2", cn_b="0"), "x")   # unassigned output never links
     assert t.linked("A") == ["A"]
+
+
+def test_afpx_routing_reads_the_main_matrix_and_warns_on_disagreement():
+    """Captures 23/24: PC-Tool edits the 12-input main matrix (AOM 1); inputs 0/1 = Digital In L/R."""
+    root = ET.Element("ATF", Dev="15", V="4.80b")
+    ET.SubElement(root, "OC", ON="8", CN="25", MT="1")
+    route = ET.SubElement(root, "Route")
+    ET.SubElement(route, "R", INS="12", AOM="1", OUTS="12", G96="0.4", G97="0.5", G118="1")   # I: L .4, R .5; J: input 10
+    ET.SubElement(route, "R", INS="2", AOM="9", OUTS="10", G16="0.5", G17="0.5")
+    t, rep = afpx.to_tune(root, "x")
+    assert t.channel("I").mix == {"L": 0.4, "R": 0.5}
+    assert any("I: main and digital routing matrices disagree" in w for w in rep.warnings)
+    assert any("J: routing from inputs other than Digital In L/R" in w for w in rep.warnings)

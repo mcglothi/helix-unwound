@@ -95,11 +95,15 @@ def test_state_persists_across_restart(eng, tmp_path):
     assert again.tune.channel("E").name == "Sub L"
 
 
-def test_mix_written_to_optical_matrix(eng):
+def test_mix_written_to_main_matrix_row_like_pc_tool(eng):
+    """Captures 23/24: PC-Tool writes MAINMATRIX VOL08{00..11} for output I, L/R in inputs 0/1."""
     dev = live(eng)
     ad = eng.mapping.channels[8].mix  # channel I
-    eng.edit("test", "mono sub", lambda t: setattr(t.channel("I"), "mix", {"L": 0.5, "R": 0.5}))
-    for addr in ad.values():
-        assert bytes(dev.ram[addr * 4: addr * 4 + 4]) == bytes.fromhex("00800000")  # 0.5 in 8.24
+    assert [eng.mapping.pm.name_at(ad[k])[0][-7:] for k in ("L", "R")] == ["VOL0800", "VOL0801"]
+    assert len(ad) == 12 and all(eng.mapping.pm.name_at(a)[0].startswith("MAINMATRIX_") for a in ad.values())
+    eng.edit("test", "sub 40/50", lambda t: setattr(t.channel("I"), "mix", {"L": 0.4, "R": 0.5}))
+    word = lambda a: bytes(dev.ram[a * 4: a * 4 + 4]).hex()
+    assert (word(ad["L"]), word(ad["R"])) == ("00666666", "00800000")      # captured words
+    assert all(word(a) == "00000000" for k, a in ad.items() if k not in ("L", "R"))
     with pytest.raises(Exception):
         eng.edit("test", "bad", lambda t: setattr(t.channel("I"), "mix", {"X": 1.0}))

@@ -138,15 +138,23 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
                                 freq_hz=float(f.get("F")), gain_db=g,
                                 q=min(30.0, max(0.1, float(f.get("Q", "1"))))))
         ch.eq = bands
-    # routing: the 2-input (digital/optical) matrix, G index = out*2 + in
-    for R in root.findall("Route/R"):
-        if R.get("INS") == "2" and R.get("OUTS") == "10" and R.get("AOM") == "9":
-            g = {int(k[1:]): float(v) for k, v in R.attrib.items() if k.startswith("G")}
-            for i, ch in enumerate(tune.channels):
-                ch.mix = {name: g.get(i * 2 + n, 0.0) for n, name in enumerate(("L", "R")) if g.get(i * 2 + n, 0.0)}
-            break
+    # routing: PC-Tool edits the 12-input main matrix (AOM 1, G index = out*12 + in, inputs 0/1 =
+    # Digital In L/R; captures 23/24). Older/other presets: fall back to the 2-input matrix (AOM 9).
+    matrices = {(R.get("INS"), R.get("AOM")): {int(k[1:]): float(v) for k, v in R.attrib.items() if k.startswith("G")}
+                for R in root.findall("Route/R")}
+    main, opto = matrices.get(("12", "1")), matrices.get(("2", "9"))
+    if main is not None:
+        for i, ch in enumerate(tune.channels):
+            ch.mix = {name: main.get(i * 12 + n, 0.0) for n, name in enumerate(("L", "R")) if main.get(i * 12 + n, 0.0)}
+            if any(main.get(i * 12 + n, 0.0) for n in range(2, 12)):
+                rep.warnings.append(f"{ch.id}: routing from inputs other than Digital In L/R is not supported and was dropped")
+            if opto is not None and any(main.get(i * 12 + n, 0.0) != opto.get(i * 2 + n, 0.0) for n in range(2)):
+                rep.warnings.append(f"{ch.id}: main and digital routing matrices disagree; the main matrix was used")
+    elif opto is not None:
+        for i, ch in enumerate(tune.channels):
+            ch.mix = {name: opto.get(i * 2 + n, 0.0) for n, name in enumerate(("L", "R")) if opto.get(i * 2 + n, 0.0)}
     else:
-        rep.warnings.append("no 2-input routing matrix found; channels keep default L/R routing")
+        rep.warnings.append("no routing matrix found; channels keep default L/R routing")
     return tune, rep
 
 

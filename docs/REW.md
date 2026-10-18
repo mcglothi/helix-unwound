@@ -1,9 +1,12 @@
 # Read-only REW capture browser
 
-Last Updated: 2026-10-15
+Last Updated: 2026-10-18
 
 In Measurements, expand **Bring measurements from REW**. On the engine computer,
-start REW's API from Preferences. Browse captures, select one to preview, identify
+start REW's API (launch REW with `-api`, e.g. `open -a /Applications/REW/REW.app --args -api`,
+or enable it in Preferences). **The API needs a REW 5.40 beta "-api" build**; stable 5.31.3
+reports "API not supported in this build". Beta builds are downloaded from AV Nirvana
+(forum login required). Browse captures, select one to preview, identify
 its measured outputs/listening position and optionally its capture-time scene,
 then copy it into the library. The default port is 4735; connection options allow
 another local port. No arbitrary remote URL is accepted.
@@ -37,5 +40,15 @@ HTTP entry points: owner-only `GET /api/rew`,
 ignore proxy environment variables and do not follow redirects.
 
 Reference: [official REW API documentation](https://www.roomeqwizard.com/help/help/html/api.html).
-Fixture-backed tests cover formats, refusals and provenance. Live REW acceptance
-is still pending; unsupported schemas fail explicitly rather than guessing.
+Fixture-backed tests cover formats, refusals and provenance; unsupported schemas fail
+explicitly rather than guessing.
+
+**Live acceptance (2026-10-18, macOS, REW 5.40 beta 135, API 0.9.8, loopback only):**
+discovery accepted the live `/doc.json` (Swagger 2.0, 378 paths) and measurement list. A
+synthetic response (20 Hz-20 kHz, 48 points/octave, +6 dB bump at 100 Hz) was imported into
+REW through its own `/import/frequency-response-data` endpoint, then read back by
+`RewClient.capture`: 479 points, maximum error 0.0000 dB. Through the HelixTune API,
+discover -> preview -> import created a library measurement, and a repeated import returned
+the existing record. The synthetic curve was then deleted from REW. A real microphone
+measurement has not yet been imported. Note: right after launch REW briefly answers
+`/doc.json` with 404 while the API starts; retry after a moment.

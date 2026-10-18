@@ -216,3 +216,66 @@ def test_every_sync_burst_is_followed_by_the_post_sync_pause():
     syncs = [i for i, e in enumerate(events) if e == "SYNC"]
     assert len(syncs) == 5 and POST_SYNC_S >= 0.1          # 4 in open, 1 in close
     assert all(events[i + 1] == POST_SYNC_S for i in syncs)
+
+
+class BadEcho(EmulatedDevice):
+    """Answers everything like the DSP but corrupts the keep-alive echo."""
+    def _handle(self, p):
+        reply = super()._handle(p)
+        return bytes([0x02, 0x00]) + bytes(6) if p[:1] == b"\x02" and reply is not None else reply
+
+
+def test_a_partial_open_closes_the_session_and_returns_to_19200():
+    dev, bauds, s = make(BadEcho())
+    with pytest.raises(SessionError, match="keep-alive not echoed"):
+        s.open()
+    wire = sent(dev)
+    assert wire[-3:] == [H("09 00"), H("0a 2f"), b"SYNC"] and wire.count(H("09 00")) == 1
+    assert not dev.session_open and dev.device_baud == LOW and bauds[-1] == LOW and not s.open_
+
+
+def test_an_unrecognised_device_gets_nothing_after_identify():
+    payload = bytearray(EmulatedDevice().identify_payload)
+    payload[142:150] = b"OTHERDEV"
+    dev, _, s = make(EmulatedDevice(identify_payload=bytes(payload)))
+    with pytest.raises(SessionError):
+        s.open()
+    assert sent(dev)[-1] == H("08")                      # no session start, no close
+
+
+def test_engine_attach_partial_open_closes_once_and_reports(synthetic_mapping, tmp_path):
+    from helixtune.engine import Engine, EngineError
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    dev = BadEcho()
+    with pytest.raises(EngineError, match="keep-alive not echoed"):
+        engine.attach(Client(dev, allow_writes=True, timeout=0.05), "emulator")
+    assert sent(dev).count(H("09 00")) == 1 and not dev.session_open and dev.device_baud == LOW
+    assert engine.client is None and engine.session is None
+
+
+def test_missed_keepalive_requires_reconnect_even_for_a_full_overwrite(synthetic_mapping, tmp_path):
+    from helixtune.engine import Engine, EngineError
+    engine = Engine(mapping=synthetic_mapping, data_dir=tmp_path, keepalive_s=0.02)
+    dev = EmulatedDevice()
+    engine.attach(Client(dev, allow_writes=True, timeout=0.02), "emulator")
+    dev.baudrate = LOW                                   # link drops out of sync
+    assert wait_for(lambda: engine.device.needs_reconnect)
+    before = len(dev.log)
+    with pytest.raises(EngineError, match="disconnect and reconnect"):
+        engine.push_full("OVERWRITE")
+    assert not [c for c in wire_commands(b"".join(dev.log[before:])) if c[:1] == H("03")]
+    engine.detach()
+    dev2 = EmulatedDevice()
+    engine.attach(Client(dev2, allow_writes=True, timeout=0.05), "emulator")
+    assert not engine.device.needs_reconnect and engine.push_full("OVERWRITE") > 0
+    engine.detach()
+
+
+def test_physical_ports_need_a_short_read_timeout():
+    class Port(Recording):
+        def __init__(self, timeout): super().__init__(); self.timeout = timeout
+    for bad in (None, 1.0):
+        with pytest.raises(ValueError, match="read timeout"):
+            Client(Port(bad))
+    Client(Port(0.05))
+    Client(Recording())                                  # fakes without a timeout attribute

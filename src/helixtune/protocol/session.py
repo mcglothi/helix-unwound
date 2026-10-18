@@ -70,13 +70,24 @@ class Session:
         self._switch(BAUD_LOW, commands.LOW_HOST_BAUD)
         info = self.client.identify()
         if info.model_type != commands.PRO_MK2:
+            # Nothing more is sent to a device we do not recognise.
             raise SessionError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
         self.client.send(SESSION_START)
-        self.sleep(ACK_WAIT_S)
-        self.client.drain()
-        self._switch(BAUD_HIGH, self.high_baud)
-        self._sync()
-        self.keepalive()                              # proves the high-speed link answers
+        try:
+            self.sleep(ACK_WAIT_S)
+            self.client.drain()
+            self._switch(BAUD_HIGH, self.high_baud)
+            self._sync()
+            self.keepalive()                          # proves the high-speed link answers
+        except Exception:
+            # Partial open: the session was started and the DSP may be at high speed. End it and
+            # return both sides to 19200 before reporting; a DSP the close cannot reach is left
+            # for the next open's baud-recovery sequence.
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
         self.open_, self.info = True, info
         return info
 

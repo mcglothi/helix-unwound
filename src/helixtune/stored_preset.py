@@ -100,14 +100,7 @@ def backup(client: Client, set_host_baud, *, sleep=time.sleep, timeout: float = 
     from .protocol.session import Session
     with client.stored_backup_mode():
         session = Session(client, set_host_baud, sleep=sleep)
-        try:
-            session.open()
-        except Exception:
-            try:
-                session.close()
-            except Exception:
-                pass
-            raise
+        session.open()                    # closes itself if it fails after starting the session
         try:
             reply = client.transact(commands.SELECT_STORED)
             if reply.payload != commands.SELECT_STORED:

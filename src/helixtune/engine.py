@@ -74,6 +74,7 @@ class DeviceState:
     baselined: bool = False         # completed writes acknowledged; not hardware readback verification
     sync_state: Literal["disconnected", "unsynchronized", "applying", "synchronized", "uncertain"] = "disconnected"
     last_error: str | None = None
+    needs_reconnect: bool = False   # set by a missed keep-alive; every write refused until reconnect
 
 
 @dataclass
@@ -177,14 +178,10 @@ class Engine:
                 session = Session(client, lambda baud: setattr(client.t, "baudrate", baud),
                                   **({"sleep": lambda s: None} if quick else {}))
                 try:
-                    info = session.open()
+                    info = session.open()     # a partial open closes itself before raising
                 except SessionError as exc:
                     raise EngineError(str(exc)) from exc
                 except Exception as exc:
-                    try:
-                        session.close()
-                    except Exception:
-                        pass
                     raise EngineError(f"Could not open a DSP session: {exc}") from exc
             else:
                 info = client.identify()      # read-only: identify only, no session
@@ -222,6 +219,7 @@ class Engine:
                         self.device.baselined = False
                         self.pending_writes = len(self.mapping.render(self.tune))
                         self.device.sync_state = "uncertain"
+                        self.device.needs_reconnect = True
                         self.device.last_error = (
                             f"keep-alive failed ({exc}); device state is unknown. Incremental writes are "
                             "paused. Reconnect and perform a confirmed full overwrite to resynchronize.")
@@ -286,6 +284,9 @@ class Engine:
             raise EngineError("no device attached")
         if not self.device.writes_enabled:
             raise EngineError("device attached read-only; writes are disabled")
+        if self.device.needs_reconnect:
+            raise EngineError("the DSP stopped answering keep-alives; disconnect and reconnect before "
+                              "sending anything (nothing was written)")
 
     def backup_stored_preset(self) -> dict:
         from . import stored_preset

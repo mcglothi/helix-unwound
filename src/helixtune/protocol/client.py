@@ -19,12 +19,22 @@ class WritesDisabled(PermissionError):
     pass
 
 
+# drain() and _read_frame() enforce their deadlines between reads; one blocking read must not
+# outlast them, so physical ports need a short read timeout (the CLI/API open at 0.05 s).
+MAX_PORT_READ_TIMEOUT_S = 0.1
+
+
 class Client:
     def __init__(self, transport: Transport, *, allow_writes: bool = False, timeout: float = 0.5):
         self.t = transport
         self.allow_writes = allow_writes
         self.timeout = timeout
         self._backup_mode = False
+        port_timeout = getattr(transport, "timeout", 0)
+        if self._physical() and hasattr(transport, "timeout") and (
+                port_timeout is None or port_timeout > MAX_PORT_READ_TIMEOUT_S):
+            raise ValueError(f"serial read timeout must be set and at most {MAX_PORT_READ_TIMEOUT_S} s "
+                             f"(got {port_timeout!r}); a blocking read could outlast the protocol deadlines")
 
     @contextmanager
     def stored_backup_mode(self) -> Iterator[None]:

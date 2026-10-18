@@ -315,10 +315,12 @@ partial-open/close failures on hardware. Physical transports still reject every 
 
 1. **After the 2026-10-18 live test:** stored backup now opens PC-Tool's session and sends
    `32 01 06 00` (the only way the DSP answered `32 03`); `Session` pauses 0.1 s after each sync;
-   writes to Director volume parameters are refused. Before enabling physical engine sessions:
-   bound the serial read timeout used by drain, force reconnect after a heartbeat failure, handle
-   partial open/close, and start/end every truck test by reading the Director's Digital Volume
-   (see the unexplained incident in HARDWARE-EVIDENCE).
+   writes to Director volume parameters are refused. Pre-session hardening done (2026-10-18):
+   physical ports must have a read timeout <= 0.1 s; a missed keep-alive sets `needs_reconnect`
+   and refuses every write, full overwrites included, until reconnect; a partial `Session.open`
+   closes itself (once) before raising, and an unrecognised device gets nothing after identify.
+   Physical engine sessions are still disabled: an explicit opt-in (`serve --allow-physical-writes`)
+   needs Tim's decision. Start/end every truck test by reading the Director's Digital Volume.
 2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
 3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
 4. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Portable CI is now implemented (milestone 8); settle a license before inviting community code contributions.

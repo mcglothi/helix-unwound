@@ -26,6 +26,7 @@ from .access import AccessControl, COOKIE, SessionLimit
 from .proposals import ProposalConflict
 from .safety import OutputProtection
 from .measurements import CaptureDriver, Measurement
+from .measurements import normalise_seat
 from .rew import RewClient, RewError
 
 WEB = Path(__file__).parent / "web"
@@ -596,6 +597,9 @@ def create_app(engine: Engine) -> FastAPI:
         preview, arrays = app.state.rew_factory(value.port).capture(value.uuid)
         if preview['fingerprint'] != value.expected_fingerprint:
             raise HTTPException(409, 'REW capture changed; refresh the preview before importing')
+        seat = normalise_seat(value.seat)
+        if not seat:
+            raise HTTPException(422, 'Choose the listening position')
         with engine._lock:
             channels = sorted({engine.tune.channel(cid).id for cid in value.channels})
             if value.captured_now:
@@ -629,10 +633,10 @@ def create_app(engine: Engine) -> FastAPI:
             for info in engine.measurements.list():
                 existing = engine.measurements.get(info['id'])
                 if (existing.import_provenance == provenance and existing.channels == channels and
-                        existing.seat == value.seat and existing.tune == tune):
+                        existing.seat == seat and existing.tune == tune):
                     return {'id': existing.id, 'created': False}
             measurement = Measurement(name=preview['summary']['title'], kind='rew-import', channels=channels,
-                seat=value.seat, taken_at=0, source="Imported from REW",
+                seat=seat, taken_at=0, source="Imported from REW",
                 notes=preview['summary']['notes'], tune=tune, import_provenance=provenance, **arrays)
             engine.measurements.save(measurement)
             if value.captured_now:

@@ -79,3 +79,17 @@ def test_seat_spelling_is_normalised_on_import_and_selection(api):
         engine.measurements.save(legacy)
         _, excluded, available = engine._prediction_selection("PASSENGER")
         assert available == 1
+
+
+def test_repeated_import_with_differently_spelled_seat_is_deduplicated(api):
+    """Codex review of c17786f: dedupe compared the raw seat, so '  Driver ' imported twice made two records."""
+    engine, _, client = api
+    with client as c:
+        fp = c.get(f"/api/rew/measurements/{UID}").json()["fingerprint"]
+        body = {"uuid": UID, "expected_fingerprint": fp, "channels": ["A"]}
+        first = c.post("/api/rew/import", json=body | {"seat": "  Driver "}).json()
+        for seat in ("  Driver ", "DRIVER", "driver"):
+            again = c.post("/api/rew/import", json=body | {"seat": seat}).json()
+            assert again == {"id": first["id"], "created": False}
+        assert c.post("/api/rew/import", json=body | {"seat": "   "}).status_code == 422
+        assert len(engine.measurements.list()) == 1

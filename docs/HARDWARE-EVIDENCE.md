@@ -164,7 +164,7 @@ stored tune with the same change:
 |---|---|
 | Off, LR12, LR24, BW6, BW18 | bit-exact |
 | BW12 | bit-exact with Q 0.71 (PC-Tool's constant; LR24 halves use .707), now implemented |
-| Bessel 24 (passed through while changing characteristic) | right shape, ~1000 LSB off: PC-Tool's Bessel constants differ |
+| Bessel 24 (passed through while changing characteristic) | ~1000 LSB off. Free fit of our RBJ high-pass: stage 0 f = fc/1.357, Q 0.552 (8 LSB); stage 1 f = fc/1.624, Q 0.798 (2 LSB). Not bit-exact, so PC-Tool uses a different Bessel design; needs more captures |
 | LR36 | three biquads at 60.8 Hz with Q ~0.57 / 0.74 / 1.17, not BW3 squared; not derived |
 
 PC-Tool offers 6/18 dB only with Butterworth. Linkwitz steps 0/12/24/36. The first-order

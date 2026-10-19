@@ -1,12 +1,13 @@
 <script lang="ts">
   import { app } from '../state.svelte'
   import Graph from './Graph.svelte'
+  import PredictionSummary from './PredictionSummary.svelte'
 
   const LAYERS = [
     { k: 'target', l: 'Target', sw: 'border-top:2px dashed var(--ink)' },
-    { k: 'measured', l: 'Measured', sw: 'border-top:2px solid var(--dim)' },
-    { k: 'predicted', l: 'Predicted', sw: 'border-top:3px solid var(--accent)' },
-    { k: 'groups', l: 'Drivers', sw: 'border-top:2px solid var(--c-mid)' },
+    { k: 'measured', l: 'Captures', sw: 'border-top:2px solid var(--dim)' },
+    { k: 'predicted', l: 'Estimate', sw: 'border-top:3px solid var(--accent)' },
+    { k: 'groups', l: 'Role estimates', sw: 'border-top:2px solid var(--c-mid)' },
   ] as const
   const SEATS = ['driver', 'passenger', 'center']
 </script>
@@ -31,6 +32,7 @@
     <button class="small" disabled={app.busy || !app.system?.measurement_count} onclick={() => app.proposeAutoEq([app.selected])}>Auto-EQ {app.selected}</button>
     <button class="small" disabled={app.busy || !app.system?.measurement_count} onclick={() => app.proposeAutoEq(null)}>Auto-EQ all</button>
   </div>
+  <PredictionSummary />
   <div class="plot"><Graph /></div>
 </section>
 

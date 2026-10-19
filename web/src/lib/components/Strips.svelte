@@ -4,6 +4,9 @@
   import { fmtHz } from '../dsp'
 
   const SRC_SHORT = { L: 'L', R: 'R', mono: 'L+R', off: 'off', custom: 'mix' } as const
+  // PC-Tool link group: other channels that receive this channel's edits
+  const linkedWith = (c: { id: string; link_group: number }) =>
+    c.link_group ? (app.tune?.channels ?? []).filter((o) => o.link_group === c.link_group && o.id !== c.id).map((o) => o.id) : []
 
   const ORDER = ['subwoofer', 'woofer', 'midbass', 'midrange', 'tweeter', 'fullrange', 'unused']
   const chans = $derived(
@@ -19,7 +22,7 @@
     <div role="listitem" class="strip panel" class:sel={c.id === app.selected} class:unused={c.role === 'unused'}>
       <button class="head" onclick={() => (app.selected = c.id)} aria-label="Select channel {c.id}">
         <span class="bar" style="background:{ROLE_COLORS[c.role]}"></span>
-        <span class="title"><b>{c.id}</b> {c.name || c.role} <span class="srcbadge">{SRC_SHORT[sourceOf(c.mix)]}</span></span>
+        <span class="title"><b>{c.id}</b> {c.name || c.role} <span class="srcbadge">{SRC_SHORT[sourceOf(c.mix)]}</span>{#if linkedWith(c).length}<span class="srcbadge" title="Linked with {linkedWith(c).join(', ')}: gain, mute, polarity, crossovers and EQ edits apply to both">⛓ {linkedWith(c).join('')}</span>{/if}</span>
       </button>
       <div class="body">
         <div class="fader" aria-hidden="true"><div class="cap" style="bottom:{pos(c.gain_db)}"></div></div>
@@ -30,7 +33,7 @@
         </div>
       </div>
       <div class="btns">
-        <button class:on={c.mute} aria-pressed={c.mute} aria-label="Mute {c.id}" onclick={() => app.patchChannel(c.id, { mute: !c.mute })}>M</button>
+        <button class:on={c.mute} aria-pressed={c.mute} aria-label="Mute {c.id}" onclick={() => app.toggleMute(c.id)}>M</button>
         <button class:on={c.invert} aria-pressed={c.invert} aria-label="Invert {c.id}" onclick={() => app.patchChannel(c.id, { invert: !c.invert })}>Ø</button>
       </div>
     </div>

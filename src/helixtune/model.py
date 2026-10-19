@@ -64,6 +64,10 @@ class Channel(BaseModel):
     eq: list[EqBand] = Field(default_factory=_default_bands)
     # input mix: linear gain from each source input (L, R). {"L": 0.5, "R": 0.5} = mono sum.
     mix: dict[str, float] = Field(default_factory=dict)
+    # PC-Tool link group (.afpx LG); 0 = not linked. Edits to gain, mute, polarity,
+    # crossovers or an EQ band copy that item to every channel in the same group,
+    # as PC-Tool did in the 2026-10-17 captures. Delay is never linked.
+    link_group: int = Field(0, ge=0, le=99)
 
     @field_validator("id")
     @classmethod
@@ -115,14 +119,19 @@ class Tune(BaseModel):
             raise ValueError(f"exactly one channel for each physical output {CHANNELS} is required")
         return [by_id[cid] for cid in CHANNELS]
 
-    @model_validator(mode="after")
-    def _default_routing(self):
-        # tunes saved before routing existed have no mix at all; give them standard L/R
-        # alternation instead of silence (an all-empty mix is never intentional)
-        if all(not ch.mix for ch in self.channels):
-            for i, ch in enumerate(self.channels):
-                ch.mix = {INPUTS[i % 2]: 1.0}
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _default_routing(cls, value):
+        # Only pre-routing serialized tunes omit every mix field. An explicitly
+        # empty mix means Off, even when all ten outputs are intentionally off.
+        if isinstance(value, dict):
+            channels = value.get("channels")
+            if channels and all(isinstance(ch, dict) and "mix" not in ch for ch in channels):
+                routes = {cid: {INPUTS[i % 2]: 1.0} for i, cid in enumerate(CHANNELS)}
+                value = {**value, "channels": [
+                    {**ch, "mix": dict(routes.get(str(ch.get("id", "")).upper(), {}))} for ch in channels
+                ]}
+        return value
 
     def channel(self, cid: str) -> Channel:
         cid = cid.upper()
@@ -130,3 +139,10 @@ class Tune(BaseModel):
             if ch.id == cid:
                 return ch
         raise KeyError(f"no channel {cid!r}; channels are {CHANNELS}")
+
+    def linked(self, cid: str) -> list[str]:
+        """cid plus every channel sharing its link group, in output order."""
+        group = self.channel(cid).link_group
+        if not group:
+            return [cid.upper()]
+        return [ch.id for ch in self.channels if ch.link_group == group]

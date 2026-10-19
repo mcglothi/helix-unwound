@@ -1,6 +1,8 @@
 import json
 
 import pytest
+
+from helixtune.protocol import commands
 from pydantic import ValidationError
 
 from helixtune import equipment, safety
@@ -80,7 +82,9 @@ def test_every_tune_adoption_path_enforces_saved_floors(engine, operation):
             engine.tune = original
             engine.push_full("OVERWRITE")
     if operation == "full_push":
-        assert len(device.log) == 1  # identify only; rejected before writing
+        from helixtune.protocol.session import wire_commands
+        sent = wire_commands(b"".join(device.log))
+        assert not [c for c in sent if c[:1] == bytes([commands.Cmd.WRITE_RAM])]  # rejected before any parameter write
 
 
 def test_protections_survive_restart_after_metadata_change(engine, synthetic_mapping):
@@ -107,7 +111,8 @@ def test_corrupt_or_future_protection_file_fails_closed(engine, synthetic_mappin
     value = json.loads(path.read_text())
     value["version"] = 999
     path.write_text(json.dumps(value))
-    with pytest.raises(ValidationError):
+    path.with_name("protections.json.bak").unlink(missing_ok=True)
+    with pytest.raises(EngineError, match="no usable backup"):
         Engine(mapping=synthetic_mapping, data_dir=engine.data_dir)
 
 

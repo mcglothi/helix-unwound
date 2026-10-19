@@ -5,6 +5,9 @@
   import { fmtHz } from '../dsp'
   import Graph from './Graph.svelte'
   import ProposalCard from './ProposalCard.svelte'
+  import DevicePanel from './DevicePanel.svelte'
+  import OutputMap from './OutputMap.svelte'
+  import { connectionStatus } from '../device'
 
   const STEPS = [
     { t: 'System', s: 'drivers, roles, safety' },
@@ -15,6 +18,7 @@
     { t: 'Listen & A/B', s: 'compare, keep the best' },
   ]
   let step = $state(0)
+  let connectionOpen = $state(false)
   const chans = $derived(app.tune?.channels ?? [])
   const used = $derived(chans.filter((c) => c.role !== 'unused'))
   const hasMeas = $derived(!!app.system?.measurement_count)
@@ -41,9 +45,9 @@
         let note = '', ok = true
         if (lp && hp) {
           const oct = Math.log2(lp / hp)
-          if (oct < -0.15) { note = `gap of ${(-oct).toFixed(2)} oct — likely a dip`; ok = false }
+          if (oct < -0.15) { note = `electrical gap of ${(-oct).toFixed(2)} oct — measure the handover`; ok = false }
           else if (oct > 0.5) { note = `overlap of ${oct.toFixed(2)} oct — check summing`; ok = false }
-          else note = Math.abs(oct) < 0.05 ? 'aligned' : `${oct > 0 ? 'overlap' : 'gap'} ${Math.abs(oct).toFixed(2)} oct`
+          else note = Math.abs(oct) < 0.05 ? 'matching electrical cutoff points' : `${oct > 0 ? 'overlap' : 'gap'} ${Math.abs(oct).toFixed(2)} oct`
         } else note = lp ? 'upper driver has no high-pass' : 'lower driver has no low-pass'
         out.push({ a: `${lo.id} ${lo.name || lo.role}`, b: `${hi.id} ${hi.name || hi.role}`, lp, hp, note, ok })
       }
@@ -56,28 +60,28 @@
 <div class="wizard">
   <nav class="steps" aria-label="Setup steps">
     {#each STEPS as st, i}
-      <button class="step" class:now={i === step} class:done={i < step} aria-current={i === step ? 'step' : undefined} onclick={() => (step = i)}>
-        <span class="dot">{i < step ? '✓' : i + 1}</span>
+      <button class="step" class:now={i === step} aria-current={i === step ? 'step' : undefined} onclick={() => (step = i)}>
+        <span class="dot">{i + 1}</span>
         <span class="txt"><b>{st.t}</b><small>{st.s}</small></span>
       </button>
     {/each}
   </nav>
 
-  <main>
-    <div class="kicker">STEP {step + 1} OF {STEPS.length}</div>
+  <section class="guide-content">
+    <div class="kicker">GUIDE · {step + 1} OF {STEPS.length}</div>
     <h1>{STEPS[step].t}</h1>
 
     {#if step === 0}
-      <p class="muted">Confirm what each output drives. Roles set the safety rules — tweeters and mids need a high-pass, subs a subsonic filter. Change roles in Studio's inspector.</p>
-      <div class="sys">
-        {#each chans as c}
-          <div class="panel row" class:unused={c.role === 'unused'}>
-            <span class="sw" style="background:{ROLE_COLORS[c.role]}"></span>
-            <b class="mono">{c.id}</b><span>{c.name || '—'}</span><span class="muted">{ROLE_LABEL[c.role]}</span>
-            <span class="mono muted">{c.hp ? `HP ${fmtHz(c.hp.freq_hz)}` : ''} {c.lp ? `LP ${fmtHz(c.lp.freq_hz)}` : ''}</span>
-          </div>
-        {/each}
-      </div>
+      <section class="panel readiness" aria-labelledby="readiness-title">
+        <h2 id="readiness-title">Start with a recoverable session</h2>
+        <p>Work offline while you map your outputs and review a known tune. Connecting does not read the tune already in the DSP.</p>
+        <div class="readiness-grid">
+          <div><b>1 · Keep a starting point</b><p>Save a named workstation scene. Back up the existing DSP tune separately in the vendor software.</p><button onclick={() => { const name = prompt('Save current tune as…'); if (name) app.saveSnapshot(name) }}>Save a starting scene…</button></div>
+          <div><b>2 · Choose your connection</b><p>{connectionStatus(app.status)}. Start read-only, or explore with the emulator.</p><button onclick={() => connectionOpen = true}>Connection & recovery…</button></div>
+          <div><b>3 · Gather your evidence</b><p>{app.system?.measurement_count ?? 0} of {app.system?.available_measurement_count ?? 0} captures eligible in this seat. Check outputs, hardware and capture-time tune in Measurements.</p><button onclick={() => { app.mode = 'measurements'; document.documentElement.dataset.mode = 'measurements' }}>Open Measurements</button></div>
+        </div>
+      </section>
+      <OutputMap />
       <p class="muted">Record the actual head unit, amplifiers and speakers (with their specs) in
         <button class="link" onclick={() => { app.mode = 'system'; document.documentElement.dataset.mode = 'system' }}>System</button>
         — a recorded driver Fs tightens that channel's minimum high-pass.</p>
@@ -93,13 +97,13 @@
       <div class="dist">
         {#each used as c}
           <label><span><span class="sw" style="background:{ROLE_COLORS[c.role]}"></span>{label(c)}</span>
-            <input type="number" min="0" step="0.5" placeholder="distance" bind:value={dist[c.id]} />
+            <input type="number" min="0" step="0.5" placeholder="distance ({distUnit === 'cm' ? 'cm' : 'in'})" aria-label="{label(c)} distance ({distUnit === 'cm' ? 'cm' : 'inches'})" bind:value={dist[c.id]} />
           </label>
         {/each}
       </div>
       <button class="primary" disabled={app.busy} onclick={propose}>Propose delays</button>
     {:else if step === 3}
-      <p class="muted">Adjacent drivers should hand over near the same frequency. Gaps cause dips; wide overlaps can cause peaks or cancellations depending on polarity and delay.</p>
+      <p class="muted">These are electrical filter settings, not measured acoustic slopes. Driver response, placement, polarity and delay determine the handover; matching cutoff frequencies alone does not establish acoustic alignment.</p>
       <div class="sys">
         {#each xoPairs as x}
           <div class="panel xrow" class:bad={!x.ok}>
@@ -134,40 +138,44 @@
       <button disabled={step === 0} onclick={() => step--}>Back</button>
       <button class="primary" disabled={step === STEPS.length - 1} onclick={() => step++}>Next</button>
     </div>
-  </main>
+    <p class="guide-note muted">This guide is freely navigable. Visiting a step does not mark it complete; remeasure and listen to verify changes.</p>
+  </section>
 
   <aside class="side">
     <ProposalCard />
     <div class="panel copilot">
-      <div class="ch"><b>Copilot</b><span class="muted">HTTP API · MCP</span></div>
-      <p class="muted">Any MCP-capable agent can run these steps — proposals it makes appear here for you to apply. In-app chat with a selectable model (cloud or the truck's local model) comes later.</p>
+      <div class="ch"><b>Review, apply, verify</b></div>
+      <p class="muted">Suggestions appear here for review. After applying a change, capture a new measurement and compare with your starting point. Undo/Redo and A/B slots survive app restarts.</p>
     </div>
   </aside>
 </div>
 
+<DevicePanel bind:open={connectionOpen} />
+
 <style>
+  .readiness { padding: 16px; display: grid; gap: 12px; }
+  .readiness h2 { margin: 0; font-size: 18px; }
+  .readiness-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 16px; }
+  .readiness-grid > div { display: flex; flex-direction: column; align-items: start; gap: 10px; }
+  .readiness-grid p, .guide-note { font-size: 13px; line-height: 1.5; }
+  .readiness-grid button { margin-top: auto; }
   .wizard { display: grid; grid-template-columns: 250px minmax(0, 1fr) 360px; gap: 16px; padding: 16px; }
   @media (max-width: 1100px) { .wizard { grid-template-columns: minmax(0, 1fr); } .steps { flex-direction: row !important; overflow-x: auto; } }
   @media (horizontal-viewport-segments: 2) { .wizard { grid-template-columns: env(viewport-segment-width 0 0) env(viewport-segment-width 1 0); } .steps { grid-column: 1 / -1; flex-direction: row !important; } }
-  main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-  main p { margin: 0; max-width: 70ch; line-height: 1.5; }
+  .guide-content { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .guide-content p { margin: 0; max-width: 70ch; line-height: 1.5; }
   .steps { display: flex; flex-direction: column; gap: 4px; }
   .step { all: unset; cursor: pointer; display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 10px; color: var(--muted); }
   .step:focus-visible { outline: 2px solid var(--accent); }
   .step.now { background: var(--panel); color: var(--ink); }
-  .step.done { color: var(--ink); }
   .dot { width: 28px; height: 28px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--panel-2); font-weight: 600; font-size: 13px; }
-  .step.done .dot { background: var(--accent); color: var(--accent-ink); }
   .step.now .dot { background: var(--ink); color: var(--bg); }
   .txt { display: flex; flex-direction: column; white-space: nowrap; }
   .txt small { font-size: 12px; color: var(--dim); }
   .kicker { color: var(--accent-text); font-size: 13px; font-weight: 600; letter-spacing: .06em; }
   h1 { margin: 0; font-size: 26px; }
   .sys { display: flex; flex-direction: column; gap: 6px; }
-  .row { display: grid; grid-template-columns: 14px 24px 1.4fr 1fr 1.3fr; gap: 10px; align-items: center; padding: 10px 12px; }
-  .row.unused { opacity: .5; }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
-  .row .sw { margin: 0; }
   .unit { display: flex; gap: 6px; }
   .dist { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
   .dist label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }

@@ -26,6 +26,10 @@ async function api<T = any>(method: string, path: string, body?: unknown): Promi
 }
 
 export interface Toast { id: number; text: string; kind: 'error' | 'info' }
+/** A refused change, kept on screen until dismissed (toasts vanish too quickly to act on). */
+export interface Rejection { reasons: string[] }
+/** Outputs an "Unmute at 0 dB" would touch, with the levels the user is shown. */
+export interface UnmuteReview { cid: string; link: boolean; targets: { id: string; gain_db: number }[] }
 
 class AppState {
   tune = $state<Tune | null>(null)
@@ -39,6 +43,10 @@ class AppState {
   layers = $state({ target: true, measured: true, predicted: true, groups: true, electrical: false })
   snapshots = $state<string[]>([])
   toasts = $state<Toast[]>([])
+  rejection = $state<Rejection | null>(null)
+  /** Bumped on every refused change so edited fields redraw with the real, unchanged values. */
+  revertTick = $state(0)
+  unmuteReview = $state<UnmuteReview | null>(null)
   proposal = $state<Proposal | null>(null)       // the one open for review
   preview = $state<SystemView | null>(null)      // system view if it were applied
   proposalConflicts = $state<string[]>([])       // why the open proposal can no longer be applied
@@ -47,6 +55,7 @@ class AppState {
   specFields = $state<SpecFields>({})
   protections = $state<Record<string, OutputProtection>>({})
   protectionConstraints = $state<Record<string, ProtectionConstraint>>({})
+  advisoryProtections = $state<Record<string, OutputProtection>>({})
   selectedComponent = $state<string | null>(null)
   private pollTimer: ReturnType<typeof setInterval> | undefined
   private generation = 0
@@ -70,11 +79,12 @@ class AppState {
       api<ResponseView>('GET', '/api/response?points=240'),
       api<string[]>('GET', '/api/snapshots'),
       api<Design>('GET', '/api/design'),
-      api<{ outputs: Record<string, OutputProtection>; constraints: Record<string, ProtectionConstraint> }>('GET', '/api/protections'),
+      api<{ outputs: Record<string, OutputProtection>; advisory_outputs?: Record<string, OutputProtection>; constraints: Record<string, ProtectionConstraint> }>('GET', '/api/protections'),
     ])
     if (generation !== this.generation) return
     this.design = design
     this.protections = protections.outputs
+    this.advisoryProtections = protections.advisory_outputs ?? {}
     this.protectionConstraints = protections.constraints
     if (!Object.keys(this.specFields).length) this.specFields = await api<SpecFields>('GET', '/api/design/spec-fields')
     this.tune = tune
@@ -130,13 +140,55 @@ class AppState {
     try {
       await p
     } catch (e: any) {
-      this.toast(e.message ?? String(e))
+      if (e instanceof ApiError && Array.isArray(e.body?.problems)) this.rejection = { reasons: e.body.problems }
+      else this.toast(e.message ?? String(e))
+      this.revertTick++
     }
     await this.poll()
   }
 
-  patchChannel(cid: string, fields: Partial<Channel>) {
-    return this.run(api('PATCH', `/api/channels/${cid}`, fields))
+  /** Outputs that move together with cid (its link group), cid first. */
+  linkedChannels(cid: string): Channel[] {
+    const chans = this.tune?.channels ?? []
+    const ch = chans.find((c) => c.id === cid)
+    if (!ch) return []
+    return [ch, ...(ch.link_group ? chans.filter((c) => c.link_group === ch.link_group && c.id !== cid) : [])]
+  }
+
+  /** Mute/unmute. Unmuting goes straight back to the level an output played at before it was
+   *  muted (same connection). Only a level raised while muted, or an unknown one, at positive gain
+   *  needs the reviewed "Unmute at 0 dB", so no request is sent that the safety rules would refuse. */
+  toggleMute(cid: string, opts: { link?: boolean } = {}) {
+    const ch = this.tune?.channels.find((c) => c.id === cid)
+    if (!ch) return
+    if (!ch.mute) return this.patchChannel(cid, { mute: true }, opts)
+    const link = opts.link !== false
+    const targets = link ? this.linkedChannels(cid) : [ch]
+    const before = this.status?.unmute_levels ?? {}
+    if (targets.some((c) => c.mute && c.gain_db > 0 && !(c.id in before && c.gain_db <= before[c.id]))) {
+      this.rejection = null
+      this.unmuteReview = { cid, link, targets: targets.map((c) => ({ id: c.id, gain_db: c.gain_db })) }
+      return
+    }
+    return this.patchChannel(cid, { mute: false }, opts)
+  }
+
+  acknowledgeRecovery(reason: string) {
+    return this.run(api('POST', '/api/state/acknowledge-recovery', { reason }))
+  }
+
+  confirmUnmuteAtZero() {
+    const review = this.unmuteReview
+    if (!review) return
+    this.unmuteReview = null
+    const reviewed = Object.fromEntries(review.targets.map((t) => [t.id, t.gain_db]))
+    const q = review.link ? '' : '?link=false'      // the choice made at the click, not re-derived
+    return this.run(api('POST', `/api/channels/${review.cid}/unmute-at-zero${q}`, { reviewed_gain_db: reviewed }))
+  }
+
+  patchChannel(cid: string, fields: Partial<Channel>, opts: { link?: boolean } = {}) {
+    const q = opts.link === false ? '?link=false' : ''
+    return this.run(api('PATCH', `/api/channels/${cid}${q}`, fields))
   }
   reviewProtection(item: ProtectionConstraint, action: 'confirm' | 'clear', reason: string) {
     return this.run(api('POST', `/api/protections/constraints/${item.id}/review`, {
@@ -154,6 +206,12 @@ class AppState {
   }
   undo() {
     return this.run(api('POST', '/api/undo'))
+  }
+  redo() {
+    return this.run(api('POST', '/api/redo'))
+  }
+  retrySave() {
+    return this.run(api('POST', '/api/session/save'))
   }
   loadSnapshot(name: string) {
     return this.run(api('POST', `/api/snapshots/${encodeURIComponent(name)}/load`))

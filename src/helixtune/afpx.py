@@ -5,7 +5,7 @@ Structure (observed in PC-Tool 4.20b presets for Dev=15, HELIX DSP PRO MK2):
     <OC ON=out# CN=name# LG=link group DG=delay group CINV MT ...>   x12
       <Fil FN=ON*100+n T=type F=Hz G=dB Q I dF=default Hz/>     n 0..29 EQ, 30 LP, 31 HP
       <Vol T L=linear gain i/>
-      <T T=delay PM P=phase/>
+      <T T=delay samples PM P=unknown/>  P is not the phase shown in PC-Tool
     <IC IN CN ...> x12 with 5 input-EQ bands (FN=IN//2*200+n)
     <Route><R .../></Route>   routing matrices
     <DCM> device config </DCM>
@@ -33,11 +33,11 @@ PRO_MK2_DEV = "15"
 CHANNEL_NAMES = [
     "Not assigned", "Front L Full", "Front R Full", "Front L High", "Front R High", "Front L Mid",
     "Front R Mid", "Front L Low", "Front R Low", "Front Center Full", "Front Center High",
-    "Front Center Low", "Rear L Full", "Rear R Full", "Rear L High", "Rear R High", "Rear L Mid",
+    "Front Center Low", "F Sum", "Rear L Full", "Rear R Full", "Rear L High", "Rear R High", "Rear L Mid",
     "Rear R Mid", "Rear L Low", "Rear R Low", "Rear Fill Full", "Rear Fill High", "Rear Fill Low",
     "Rear Sum", "Subwoofer 1", "Subwoofer 2", "Subwoofer 3", "Subwoofer 4", "Line Out 1",
     "Line Out 2", "Line Out 3", "Line Out 4", "Line Out 5", "Line Out 6", "Line Out 7", "Line Out 8",
-    "Subwoofer L",
+    "Subwoofer L", "Subwoofer R",
 ]
 
 # Fil T codes (PROVISIONAL): crossover active/bypassed, EQ band types
@@ -103,10 +103,14 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
             continue  # aux outputs beyond A-J
         ch: Channel = tune.channels[on]
         cn = int(oc.get("CN", 0))
-        cname = CHANNEL_NAMES[cn] if cn < len(CHANNEL_NAMES) else f"CN{cn}"
+        cname = CHANNEL_NAMES[cn] if 0 <= cn < len(CHANNEL_NAMES) else f"CN{cn}"
         fils = {int(f.get("FN")) % 100: f for f in oc.findall("Fil")}
         ch.name = "" if cn == 0 else cname
         ch.role = role_for(cname) if cn else Role.UNUSED
+        lg = oc.get("LG", "0")
+        ch.link_group = int(lg) if cn and lg.isdigit() and int(lg) <= 99 else 0
+        if cn and ch.link_group == 0 and lg not in ("0", ""):
+            rep.warnings.append(f"{ch.id}: unsupported link group {lg!r}; imported unlinked")
         ch.invert = oc.get("CINV") == "1"
         ch.mute = oc.get("MT") == "0"  # PROVISIONAL: MT=1 active
         vol = oc.find("Vol")
@@ -115,9 +119,9 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
             ch.gain_db = round(20 * math.log10(lin), 2) if lin > 0 else -60.0
         t = oc.find("T")
         if t is not None and t.get("T") is not None:
-            ch.delay_ms = round(int(t.get("T")) / sample_rate * 1000, 4)  # PROVISIONAL: samples
+            ch.delay_ms = round(int(t.get("T")) / sample_rate * 1000, 4)  # samples at 96 kHz; compared with PC-Tool 4.80b demo output
             if float(t.get("P", "0")) != 0:
-                rep.warnings.append(f"{ch.id}: phase {t.get('P')}° (PM={t.get('PM')}) not modelled yet")
+                rep.warnings.append(f"{ch.id}: unknown preset T.P={t.get('P')} (PM={t.get('PM')}) not applied; this is not the phase displayed by PC-Tool")
         ch.hp = _xo(fils.get(31), XO_HP_ON)
         ch.lp = _xo(fils.get(30), XO_LP_ON)
         bands = []
@@ -134,15 +138,23 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
                                 freq_hz=float(f.get("F")), gain_db=g,
                                 q=min(30.0, max(0.1, float(f.get("Q", "1"))))))
         ch.eq = bands
-    # routing: the 2-input (digital/optical) matrix, G index = out*2 + in
-    for R in root.findall("Route/R"):
-        if R.get("INS") == "2" and R.get("OUTS") == "10" and R.get("AOM") == "9":
-            g = {int(k[1:]): float(v) for k, v in R.attrib.items() if k.startswith("G")}
-            for i, ch in enumerate(tune.channels):
-                ch.mix = {name: g.get(i * 2 + n, 0.0) for n, name in enumerate(("L", "R")) if g.get(i * 2 + n, 0.0)}
-            break
+    # routing: PC-Tool edits the 12-input main matrix (AOM 1, G index = out*12 + in, inputs 0/1 =
+    # Digital In L/R; captures 23/24). Older/other presets: fall back to the 2-input matrix (AOM 9).
+    matrices = {(R.get("INS"), R.get("AOM")): {int(k[1:]): float(v) for k, v in R.attrib.items() if k.startswith("G")}
+                for R in root.findall("Route/R")}
+    main, opto = matrices.get(("12", "1")), matrices.get(("2", "9"))
+    if main is not None:
+        for i, ch in enumerate(tune.channels):
+            ch.mix = {name: main.get(i * 12 + n, 0.0) for n, name in enumerate(("L", "R")) if main.get(i * 12 + n, 0.0)}
+            if any(main.get(i * 12 + n, 0.0) for n in range(2, 12)):
+                rep.warnings.append(f"{ch.id}: routing from inputs other than Digital In L/R is not supported and was dropped")
+            if opto is not None and any(main.get(i * 12 + n, 0.0) != opto.get(i * 2 + n, 0.0) for n in range(2)):
+                rep.warnings.append(f"{ch.id}: main and digital routing matrices disagree; the main matrix was used")
+    elif opto is not None:
+        for i, ch in enumerate(tune.channels):
+            ch.mix = {name: opto.get(i * 2 + n, 0.0) for n, name in enumerate(("L", "R")) if opto.get(i * 2 + n, 0.0)}
     else:
-        rep.warnings.append("no 2-input routing matrix found; channels keep default L/R routing")
+        rep.warnings.append("no routing matrix found; channels keep default L/R routing")
     return tune, rep
 
 

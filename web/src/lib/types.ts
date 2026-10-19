@@ -10,6 +10,7 @@ export interface Channel {
   id: string; name: string; role: Role; gain_db: number; mute: boolean; invert: boolean
   delay_ms: number; hp: Crossover | null; lp: Crossover | null; eq: EqBand[]
   mix: Record<string, number>
+  link_group: number
 }
 export interface Tune {
   name: string; device: string; sample_rate: number; master_gain_db: number
@@ -20,6 +21,8 @@ export interface Device {
   writes_enabled: boolean; baselined: boolean
   sync_state: 'disconnected' | 'unsynchronized' | 'applying' | 'synchronized' | 'uncertain'
   last_error: string | null
+  /** a missed keep-alive: every write is refused until disconnect + reconnect */
+  needs_reconnect?: boolean
 }
 export interface EngineEvent { ts: number; source: string; summary: string; writes: number }
 export interface OutputProtection {
@@ -28,9 +31,25 @@ export interface OutputProtection {
 export interface ProposalInfo { id: string; title: string; kind: string; changes: number; source: string }
 export interface ABState { A: string | null; B: string | null; active: 'A' | 'B' | null }
 export interface Status {
-  device: Device; tune_name: string; revision: number; undo_depth: number
+  demo: boolean
+  /** server started with --allow-physical-writes (supervised write sessions on a real DSP) */
+  physical_writes_allowed?: boolean
+  /** false while a real DSP is attached: master gain stays in the workstation and is not sent */
+  master_on_device?: boolean
+  /** output -> level it played at before being muted (this connection); unmuting at or below it is direct */
+  unmute_levels?: Record<string, number>
+  /** safety-relevant state restored from a backup; DSP writes stay blocked until acknowledged */
+  state_faults?: string[]
+  /** automated seat measurement (pink noise + RTA per output) */
+  measure_run?: MeasureRunState | null
+  interrupted_measure_run?: (Partial<MeasureRunState> & { error?: string }) | null
+  connection_epoch: number
+  device: Device; tune_name: string; revision: number; undo_depth: number; redo_depth?: number
+  save_error?: string | null; recovery_notice?: string | null
   pending_writes: number | null; recent_events: EngineEvent[]
   ab: ABState; proposals: ProposalInfo[]
+  /** yellow tier: allowed settings below a recommended (not enforced) margin */
+  advisories?: string[]
 }
 export interface Proposal {
   id: string; kind: string; title: string; notes: string[]; source: string
@@ -41,6 +60,12 @@ export interface SystemView {
   seat: string; freqs: number[]; target_name: string; measurement_count: number
   measured: number[] | null; predicted: number[] | null; target: number[] | null
   groups: Record<string, number[]>; channels: Record<string, number[]>
+  available_measurement_count: number; phase_verified: boolean
+  aggregation: 'none' | 'single_capture' | 'power_sum'
+  coverage: { outputs: string[]; missing_outputs: string[] }
+  contributors: { id: string; name: string; channels: string[]; fingerprint: string; taken_at: number; frequency_range_hz: number[] }[]
+  excluded: { id: string; name: string; reason: string }[]
+  limitations: string[]
 }
 export interface ResponseView { freqs: number[]; channels: Record<string, number[]> }
 
@@ -106,5 +131,21 @@ export interface ProtectionConstraint {
   id: string; output: string; field: 'min_hp_hz' | 'min_hp_slope_db' | 'max_lp_hz' | 'fs_factor'
   value: number; unit: string; source: Record<string, unknown>; current: boolean
   state: 'pending' | 'confirmed' | 'cleared'; fingerprint: string
+  /** yellow tier: reported, not enforced, because a manufacturer minimum governs */
+  advisory?: boolean
   history: { action: string; actor: string; reason: string; at: number }[]
+}
+
+export interface MeasureRunState {
+  id: string; outputs: string[]; seat: string; seconds: number; settle_s: number; level_dbfs: number
+  source: 'rew' | 'external'; status: 'running' | 'done' | 'stopped' | 'failed'
+  phase: string; current: string | null; step: number; remaining_s: number
+  captures: { output: string; measurement_id: string; rew_uuid: string }[]
+  error: string | null; changed: string[]; restored: boolean
+  kind?: 'measure' | 'align'
+  delay_changed?: string[]
+  align?: { reference: string; adjust: string; carry: string[]; fc: number; offsets: number[]
+            results: { offset_ms: number; band_db: number; inverted?: boolean }[]; best_offset_ms?: number; gain_db?: number
+            best_inverted?: boolean; repeatability_db?: number
+            outcome?: string; proposal_id?: string } | null
 }

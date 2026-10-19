@@ -11,7 +11,7 @@ import math
 import uuid
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Kind(str, Enum):
@@ -204,6 +204,16 @@ class DriverLimits(BaseModel):
     hp_min: float | None = None        # manufacturer's recommended minimum high-pass
     hp_min_slope: float | None = None
     lp_max: float | None = None        # manufacturer's recommended maximum low-pass
+    # Highest Fs among drivers WITHOUT a manufacturer minimum high-pass: their Fs-multiple
+    # margin is their only driver-specific floor and is always enforced. Drivers that publish
+    # a minimum contribute their Fs margin only as an advisory (yellow) floor.
+    fs_unbounded: float | None = None
+
+    @model_validator(mode="after")
+    def _single_driver_default(self):
+        if self.fs_unbounded is None and self.hp_min is None:
+            self.fs_unbounded = self.fs
+        return self
 
 
 def channel_driver_limits(design: SystemDesign) -> dict[str, DriverLimits]:
@@ -222,6 +232,8 @@ def channel_driver_limits(design: SystemDesign) -> dict[str, DriverLimits]:
                 out[ch] = lim
                 continue
             cur.fs = max(x for x in (cur.fs, lim.fs) if x is not None) if (cur.fs or lim.fs) else None
+            cur.fs_unbounded = (max(x for x in (cur.fs_unbounded, lim.fs_unbounded) if x is not None)
+                                if (cur.fs_unbounded or lim.fs_unbounded) else None)
             cur.hp_min = max(x for x in (cur.hp_min, lim.hp_min) if x is not None) if (cur.hp_min or lim.hp_min) else None
             cur.hp_min_slope = max(x for x in (cur.hp_min_slope, lim.hp_min_slope) if x is not None) if (cur.hp_min_slope or lim.hp_min_slope) else None
             cur.lp_max = min(x for x in (cur.lp_max, lim.lp_max) if x is not None) if (cur.lp_max or lim.lp_max) else None

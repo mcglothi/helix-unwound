@@ -85,47 +85,53 @@ def get_channel(channel: str) -> str:
 @mcp.tool()
 def set_channel(channel: str, name: str | None = None, role: str | None = None, gain_db: float | None = None,
                 mute: bool | None = None, invert: bool | None = None, delay_ms: float | None = None,
-                source: str | None = None) -> str:
+                source: str | None = None, link: bool = True) -> str:
     """Change channel basics. role: tweeter|midrange|midbass|woofer|subwoofer|fullrange|unused.
     Roles can tighten protection floors; changing a label cannot lower existing physical-output limits.
     source: L | R | mono (L+R
-    summed at -6 dB each, e.g. for a mono subwoofer amp) | off."""
+    summed at -6 dB each, e.g. for a mono subwoofer amp) | off.
+    Linked channels (PC-Tool link group, see get_channel link_group) also receive gain/mute/invert;
+    link=False changes only this channel. Delay, name, role and source are never linked."""
     mixes = {"L": {"L": 1.0}, "R": {"R": 1.0}, "mono": {"L": 0.5, "R": 0.5}, "off": {}}
     if source is not None and source not in mixes:
         return json.dumps({"error": f"source must be one of {list(mixes)}"})
     body = {k: v for k, v in dict(name=name, role=role, gain_db=gain_db, mute=mute, invert=invert,
                                   delay_ms=delay_ms, mix=mixes.get(source) if source else None).items() if v is not None}
-    return _call("PATCH", f"/api/channels/{channel}", body)
+    return _call("PATCH", f"/api/channels/{channel}", body, params={"link": str(link).lower()})
 
 
 @mcp.tool()
 def set_crossover(channel: str, which: str, freq_hz: float | None = None, slope_db: int = 24,
-                  type: str = "linkwitz_riley", remove: bool = False) -> str:
+                  type: str = "linkwitz_riley", remove: bool = False, link: bool = True) -> str:
     """Set the high-pass (which='hp') or low-pass (which='lp') filter on a channel.
     type: linkwitz_riley|butterworth|bessel; slope_db 6..48 in steps of 6 (LR needs even orders).
-    remove=True disables that filter."""
+    remove=True disables that filter. Linked channels get the same filter unless link=False."""
     body = None if remove else {"type": type, "slope_db": slope_db, "freq_hz": freq_hz}
-    return _call("PUT", f"/api/channels/{channel}/{which}", body)
+    return _call("PUT", f"/api/channels/{channel}/{which}", body, params={"link": str(link).lower()})
 
 
 @mcp.tool()
 def set_eq_band(channel: str, band: int, freq_hz: float | None = None, gain_db: float | None = None,
-                q: float | None = None, type: str | None = None, enabled: bool | None = True) -> str:
-    """Edit EQ band 1-30 on a channel. type: peak|low_shelf|high_shelf|notch|allpass."""
+                q: float | None = None, type: str | None = None, enabled: bool | None = True,
+                link: bool = True) -> str:
+    """Edit EQ band 1-30 on a channel. type: peak|low_shelf|high_shelf|notch|allpass.
+    Like PC-Tool, the whole edited band is copied to linked channels unless link=False."""
     body = {k: v for k, v in dict(freq_hz=freq_hz, gain_db=gain_db, q=q, type=type,
                                   enabled=enabled).items() if v is not None}
-    return _call("PATCH", f"/api/channels/{channel}/eq/{band}", body)
+    return _call("PATCH", f"/api/channels/{channel}/eq/{band}", body, params={"link": str(link).lower()})
 
 
 @mcp.tool()
-def reset_eq(channel: str) -> str:
-    """Disable all EQ bands on a channel."""
-    return _call("POST", f"/api/channels/{channel}/eq/reset")
+def reset_eq(channel: str, link: bool = True) -> str:
+    """Disable all EQ bands on a channel (and its linked channels unless link=False)."""
+    return _call("POST", f"/api/channels/{channel}/eq/reset", params={"link": str(link).lower()})
 
 
 @mcp.tool()
 def set_master_gain(gain_db: float) -> str:
-    """Master gain in dB (<= 0)."""
+    """Master gain in dB (<= 0). On a real DSP this is workstation-only: it is not sent to the
+    hardware (its parameter is unverified) and predictions leave it out; status.master_on_device
+    is false."""
     return _call("PATCH", "/api/master", {"gain_db": gain_db})
 
 
@@ -141,6 +147,12 @@ def predicted_response(channels: str = "", points: int = 48) -> str:
 def undo() -> str:
     """Revert the most recent change."""
     return _call("POST", "/api/undo")
+
+
+@mcp.tool()
+def redo() -> str:
+    """Restore the last undone tune, rechecking current output protections."""
+    return _call("POST", "/api/redo")
 
 
 @mcp.tool()
@@ -180,7 +192,8 @@ def measurement_vs_current(measurement_id: str, smoothing: float = 6, points: in
 @mcp.tool()
 def system_vs_target(seat: str = "driver", smoothing: float = 6, points: int = 48) -> str:
     """Whole-system view at a seat: measured sum, predicted sum for the current tune,
-    the current target curve (level-matched 300 Hz-3 kHz), and predicted curves per driver
+    the current target curve (level-matched 300 Hz-3 kHz), eligible isolated output curves,
+    contributing/excluded captures, coverage, and magnitude-model limitations
     group and per channel. Power sums (phase-blind) for RTA data."""
     return _call("GET", "/api/system", params={"seat": seat, "smoothing": smoothing, "points": points})
 

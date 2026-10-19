@@ -176,3 +176,14 @@ def test_backup_write_failure_propagates_and_leaves_the_primary(tmp_path, monkey
     with pytest.raises(OSError, match="disk full"):
         durable.write_with_backup(path, '{"v": 3}', valid=json.loads)
     assert json.loads(path.read_text()) == {"v": 2} and json.loads(durable.backup_path(path).read_text()) == {"v": 1}
+
+
+def test_binary_garbage_primary_recovers_and_saves(synthetic_mapping, tmp_path):
+    """Codex review of 012c7a9: a non-UTF-8 primary crashed the first save after recovery."""
+    Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    pol = tmp_path / "safety.json"
+    good = pol.read_text()
+    durable.atomic_write(durable.backup_path(pol), good)
+    pol.write_bytes(b"\xff\xfe garbage")
+    e = Engine(mapping=synthetic_mapping, data_dir=tmp_path)                  # must not crash
+    assert e.state_faults and durable.backup_path(pol).read_text() == good

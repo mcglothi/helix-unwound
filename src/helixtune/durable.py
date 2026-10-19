@@ -58,7 +58,7 @@ def write_with_backup(path: Path, text: str, valid: Callable[[str], object] | No
     if path.exists():
         try:
             current = path.read_text()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             current = None                                   # unreadable primary: keep the backup as is
         keep = current is not None and current != text
         if keep and valid is not None:

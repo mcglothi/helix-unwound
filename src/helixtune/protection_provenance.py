@@ -92,6 +92,8 @@ def load(encoded: str | None) -> ProtectionBook:
     if encoded is None:
         return ProtectionBook()
     raw = json.loads(encoded)
+    if not isinstance(raw, dict):
+        raise ValueError('Protection state must be an object')
     if raw.get('version') != 1:
         book = ProtectionBook.model_validate(raw)
         book.effective()  # fail closed on invalid persisted numeric constraints

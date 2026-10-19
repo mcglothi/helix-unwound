@@ -58,12 +58,16 @@ def write_with_backup(path: Path, text: str, valid: Callable[[str], object] | No
     if path.exists():
         try:
             current = path.read_text()
-            if current != text:
-                if valid is not None:
-                    valid(current)
-                atomic_write(backup_path(path), current)
-        except (OSError, ValueError):
-            pass
+        except OSError:
+            current = None                                   # unreadable primary: keep the backup as is
+        keep = current is not None and current != text
+        if keep and valid is not None:
+            try:
+                valid(current)
+            except Exception:
+                keep = False                                 # damaged/invalid primary never becomes the backup
+        if keep:
+            atomic_write(backup_path(path), current)         # a failure here propagates: primary untouched
     atomic_write(path, text)
 
 
@@ -71,16 +75,18 @@ def read_with_backup(path: Path, parse: Callable[[str], T], what: str) -> tuple[
     """(value, notice). The notice is set when the backup had to be used; the damaged primary is
     kept beside it as <name>.damaged-<time> for evidence before anything rewrites it."""
     path = Path(path)
+    # Any failure to read or validate (wrong shapes raise TypeError/AttributeError/KeyError too)
+    # means the file is unusable; parsers are pure, so catching broadly is safe here.
     try:
         return parse(path.read_text()), None
-    except (OSError, ValueError) as primary_error:
+    except Exception as primary_error:
         backup = backup_path(path)
         try:
             value = parse(backup.read_text())
             if path.exists():
                 kept = path.with_name(f"{path.name}.damaged-{int(time.time())}")
                 atomic_write(kept, path.read_bytes().decode("utf-8", "replace"))
-        except (OSError, ValueError):
+        except Exception:
             raise StateRecoveryError(
                 f"{what} ({path.name}) could not be read and has no usable backup ({type(primary_error).__name__}). "
                 f"Keep the data directory as it is and restore {path.name} from a known-good copy; "

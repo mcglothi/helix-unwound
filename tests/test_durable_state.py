@@ -118,3 +118,61 @@ def test_no_usable_copy_refuses_to_start(synthetic_mapping, tmp_path):
     (tmp_path / "system.json.bak").write_text("{")
     with pytest.raises(EngineError, match="no usable backup"):
         Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+
+
+# ---- Codex review of 0fb6643 ---------------------------------------------------------------
+
+def _damage_policy_with_good_backup(synthetic_mapping, tmp_path, damaged_text):
+    Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    pol = tmp_path / "safety.json"
+    good = pol.read_text()
+    durable.atomic_write(durable.backup_path(pol), good)
+    pol.write_text(damaged_text)
+    return pol, good
+
+
+def test_unacknowledged_fault_survives_restart_and_still_blocks_writes(synthetic_mapping, tmp_path):
+    _damage_policy_with_good_backup(synthetic_mapping, tmp_path, '{"roles": ')
+    assert Engine(mapping=synthetic_mapping, data_dir=tmp_path).state_faults
+    again = Engine(mapping=synthetic_mapping, data_dir=tmp_path)           # restart, no acknowledgement
+    assert again.state_faults
+    with pytest.raises(EngineError, match="restored from a backup"):
+        again.attach(Client(EmulatedDevice(), allow_writes=True, timeout=0.05), "emulator")
+    again.acknowledge_recovery("Checked the safety policy values")
+    assert Engine(mapping=synthetic_mapping, data_dir=tmp_path).state_faults == []
+
+
+def test_schema_invalid_policy_never_replaces_the_good_backup(synthetic_mapping, tmp_path):
+    raw = json.loads((lambda e: (tmp_path / "safety.json").read_text())(Engine(mapping=synthetic_mapping, data_dir=tmp_path)))
+    raw["max_channel_gain_db"] = "broken"
+    pol, good = _damage_policy_with_good_backup(synthetic_mapping, tmp_path, json.dumps(raw))
+    e = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    assert e.state_faults
+    assert durable.backup_path(pol).read_text() == good                       # backup untouched
+    assert e.policy.max_channel_gain_db == json.loads(good)["max_channel_gain_db"]
+
+
+@pytest.mark.parametrize("text", ["[]", '{"version": 2, "constraints": []}', '"text"', "null"])
+def test_wrongly_shaped_protections_recover_from_backup(synthetic_mapping, tmp_path, text):
+    Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    path = tmp_path / "protections.json"
+    durable.atomic_write(durable.backup_path(path), path.read_text())
+    path.write_text(text)
+    e = Engine(mapping=synthetic_mapping, data_dir=tmp_path)
+    assert e.state_faults and "Output protections" in e.state_faults[0]
+
+
+def test_backup_write_failure_propagates_and_leaves_the_primary(tmp_path, monkeypatch):
+    path = tmp_path / "x.json"
+    durable.write_with_backup(path, '{"v": 1}', valid=json.loads)
+    durable.write_with_backup(path, '{"v": 2}', valid=json.loads)
+    real = durable.atomic_write
+
+    def failing(p, text):
+        if str(p).endswith(".bak"):
+            raise OSError("disk full")
+        return real(p, text)
+    monkeypatch.setattr(durable, "atomic_write", failing)
+    with pytest.raises(OSError, match="disk full"):
+        durable.write_with_backup(path, '{"v": 3}', valid=json.loads)
+    assert json.loads(path.read_text()) == {"v": 2} and json.loads(durable.backup_path(path).read_text()) == {"v": 1}

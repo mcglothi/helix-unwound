@@ -28,6 +28,27 @@ from .protocol.client import Client
 from .protocol.session import Session, SessionError
 
 
+def _parse_policy(text: str) -> safety.SafetyPolicy:
+    raw = json.loads(text)
+    if not isinstance(raw, dict) or not isinstance(raw.get("roles", {}), dict):
+        raise ValueError("safety policy must be an object")
+    # fill settings added after this policy file was written, keeping the user's values
+    for role, defaults in safety.DEFAULT_ROLES.items():
+        r = raw.setdefault("roles", {}).setdefault(role.value, {})
+        if not isinstance(r, dict):
+            raise ValueError(f"safety policy role {role.value} must be an object")
+        for k, v in defaults.model_dump().items():
+            r.setdefault(k, v)
+    return safety.SafetyPolicy.model_validate(raw)
+
+
+def _parse_targets(text: str) -> list[targets.Target]:
+    raw = json.loads(text)
+    if not isinstance(raw, list):
+        raise ValueError("saved targets must be a list")
+    return [targets.Target.model_validate(x) for x in raw]
+
+
 class EngineError(RuntimeError):
     pass
 
@@ -126,7 +147,19 @@ class Engine:
         # Safety-relevant state recovered from a backup is a fault: every DSP write path stays
         # blocked until the owner acknowledges it (Codex review: never silently run on an older,
         # possibly weaker policy). Unreadable state with no usable backup refuses to start.
+        # Faults are persisted BEFORE any recovered file is rewritten, so a restart cannot clear
+        # them; only acknowledge_recovery removes them (Codex review of 0fb6643).
+        self._faults_file = self.data_dir / "state_faults.json"
         self.state_faults: list[str] = []
+        if self._faults_file.exists():
+            try:
+                saved_faults = json.loads(self._faults_file.read_text())
+                if not isinstance(saved_faults, list) or not all(isinstance(x, str) for x in saved_faults):
+                    raise ValueError("unsupported shape")
+                self.state_faults = saved_faults
+            except Exception:
+                self.state_faults = ["The record of unacknowledged recovered state could not be read; review all "
+                                     "saved settings before sending anything to the DSP."]
 
         def recover(path, parse, what, critical=True):
             if not path.exists() and not durable.backup_path(path).exists():
@@ -139,11 +172,11 @@ class Engine:
                 self.recovery_notice = " ".join(x for x in (self.recovery_notice, notice) if x)
                 if critical:
                     self.state_faults.append(notice)
+                    durable.atomic_write(self._faults_file, json.dumps(self.state_faults, indent=2))
             return value
 
         tf = self.data_dir / "targets.json"
-        self.user_targets: list[targets.Target] = recover(
-            tf, lambda t: [targets.Target.model_validate(x) for x in json.loads(t)], "Saved targets", critical=False) or []
+        self.user_targets: list[targets.Target] = recover(tf, _parse_targets, "Saved targets", critical=False) or []
         self.target_name = "Car preference"
         df = self.data_dir / "system.json"
         design = recover(df, equipment.SystemDesign.model_validate_json, "Equipment design")
@@ -156,18 +189,10 @@ class Engine:
             self._write_design(df)
         pol = self.data_dir / "safety.json"
 
-        def parse_policy(text):
-            raw = json.loads(text)
-            # fill settings added after this policy file was written, keeping the user's values
-            for role, defaults in safety.DEFAULT_ROLES.items():
-                r = raw.setdefault("roles", {}).setdefault(role.value, {})
-                for k, v in defaults.model_dump().items():
-                    r.setdefault(k, v)
-            return safety.SafetyPolicy.model_validate(raw)
-        policy = recover(pol, parse_policy, "Safety policy")
+        policy = recover(pol, _parse_policy, "Safety policy")
         if policy is not None:
             self.policy = policy
-        durable.write_with_backup(pol, self.policy.model_dump_json(indent=2), valid=json.loads)
+        durable.write_with_backup(pol, self.policy.model_dump_json(indent=2), valid=_parse_policy)
         protection_file = self.data_dir / "protections.json"
         book = recover(protection_file, provenance.load, "Output protections")
         self.protection_book = book if book is not None else provenance.load(None)
@@ -188,6 +213,7 @@ class Engine:
             if len(reason.strip()) < 8:
                 raise EngineError("Say what you checked (at least 8 characters)")
             self._log("owner", f"acknowledged recovered state ({'; '.join(self.state_faults)}): {reason.strip()}")
+            self._faults_file.unlink(missing_ok=True)
             self.state_faults = []
             self.revision += 1
             return {"ok": True}
@@ -647,7 +673,7 @@ class Engine:
             raise EngineError(f"{t.name!r} is a built-in target; save under another name")
         self.user_targets = [u for u in self.user_targets if u.name != t.name] + [t.model_copy(update={"builtin": False})]
         durable.write_with_backup(self.data_dir / "targets.json",
-                                  json.dumps([u.model_dump() for u in self.user_targets], indent=2), valid=json.loads)
+                                  json.dumps([u.model_dump() for u in self.user_targets], indent=2), valid=_parse_targets)
 
     def system_view(self, seat: str = "driver", smoothing: float = 6, points: int = 200,
                     target: str | None = None, tune: Tune | None = None) -> dict:

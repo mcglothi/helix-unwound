@@ -246,7 +246,7 @@ class Engine:
                 raise EngineError("Connect a DSP (or the emulator) with writes enabled to run measurements")
             if self.device.needs_reconnect or not self.device.baselined or self.device.sync_state != "synchronized":
                 raise EngineError("The DSP must be synchronized with this workstation before measuring")
-            if self._measure_run is not None and self._measure_run.state.status == "running":
+            if self._measure_run is not None and self._measure_run.active:
                 raise EngineError("A measurement run is already in progress")
             if self.interrupted_run is not None:
                 raise EngineError("Resolve the interrupted measurement run first (restore or discard its mutes)")

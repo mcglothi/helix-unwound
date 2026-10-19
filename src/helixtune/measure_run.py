@@ -130,6 +130,9 @@ class MeasureRun:
         self._stop = threading.Event()
         self._expected_revision: int | None = None
         self._epoch = engine._connection_epoch
+        # Admission gate: stays True until cleanup, the final record and any interrupted-run
+        # publication are complete (Codex review of 2d92b31).
+        self.active = True
 
 
     # -- persistence (survives process death) ---------------------------------------------
@@ -274,8 +277,8 @@ class MeasureRun:
                 if i == 0:
                     # Noise only after the first output is isolated, never through every speaker.
                     if noise:
+                        started_noise = True            # before Play: a timed-out Play still gets a Stop
                         self.rew.generator(True)
-                        started_noise = True
                     self.rew.rta('Start')
                 self._wait(st.settle_s, 'settling')
                 self._capture(target)
@@ -298,12 +301,15 @@ class MeasureRun:
                 self._restore()
             except Exception as exc:
                 st.error = (st.error or '') + f' Restoring mutes failed ({exc}).'
-            st.phase, st.current, st.remaining_s = 'done', None, 0.0
-            # Terminal only now: a new run cannot be admitted while this one is still cleaning up.
-            st.status = final
-            self._save()
-            if st.changed and not st.restored:
-                e.interrupted_run = st.view()               # owner decides: restore or keep
+            with e._lock:                                   # admission takes the same lock
+                st.phase, st.current, st.remaining_s = 'done', None, 0.0
+                st.status = final
+                try:
+                    self._save()
+                finally:
+                    if st.changed and not st.restored:
+                        e.interrupted_run = st.view()       # owner decides: restore or keep
+                    self.active = False
         return st
 
 

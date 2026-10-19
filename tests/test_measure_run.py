@@ -283,3 +283,35 @@ def test_stop_is_honoured_while_waiting_for_rew_to_save(setup):
     r.clock = lambda: clock.__setitem__(0, clock[0] + 0.1) or clock[0]
     st = r.execute()
     assert st.status == 'stopped' and polls[0] < 10, st.error
+
+
+# ---- Codex review of 2d92b31 ----------------------------------------------------------------
+
+def test_a_timed_out_play_is_still_stopped(setup):
+    e, fake = setup
+
+    def play_times_out():
+        raise httpx.ReadTimeout('REW accepted Play but the reply was lost')
+    fake.hooks[('/generator/command', 'Play')] = play_times_out
+    st = run(e, ['C'])
+    assert st.status == 'failed' and fake.commands('/generator/command')[-1] == 'Stop'
+
+
+def test_no_admission_during_the_final_save(setup, monkeypatch):
+    e, _ = setup
+    r = e.prepare_measure_run(outputs=['C'], seat='driver', seconds=3, settle_s=0.5, level_dbfs=-24, source='rew')
+    r.sleep = lambda s: None
+    clock = [0.0]
+    r.clock = lambda: clock.__setitem__(0, clock[0] + 0.1) or clock[0]
+    real_save, seen = r._save, {}
+
+    def save():
+        real_save()
+        if r.state.status != 'running' and 'second' not in seen:
+            try:
+                e.prepare_measure_run(outputs=['D'], seat='driver', seconds=3, settle_s=0.5, level_dbfs=-24, source='rew')
+                seen['second'] = 'admitted'
+            except EngineError as exc:
+                seen['second'] = str(exc)
+    monkeypatch.setattr(r, '_save', save)
+    assert r.execute().status == 'done' and 'already in progress' in seen['second']

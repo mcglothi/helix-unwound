@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from . import durable
 from .model import Tune
 
 
@@ -58,24 +59,7 @@ def load(directory: Path) -> tuple[Checkpoint | None, str | None]:
             raise RecoveryError('Saved session and recovery checkpoint could not be read. Preserve the data directory and restore a known-good backup; no default tune was substituted.') from exc
 
 
-def atomic_write(path: Path, text: str) -> None:
-    fd, name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.tmp', dir=path.parent)
-    try:
-        with os.fdopen(fd, 'w') as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path)
-        # Persist the directory entry as well as the file content on supported hosts.
-        if os.name == 'posix':
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
+atomic_write = durable.atomic_write  # shared implementation (power-loss safe)
 
 
 def save(directory: Path, state: Checkpoint) -> None:

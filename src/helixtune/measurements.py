@@ -113,15 +113,8 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def save(self, m: Measurement) -> Measurement:
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", dir=self.root, prefix=".measurement-", suffix=".tmp", delete=False) as fh:
-                temporary = Path(fh.name)
-                fh.write(m.model_dump_json())
-            os.replace(temporary, self.root / f"{m.id}.json")
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        from .durable import atomic_write
+        atomic_write(self.root / f"{m.id}.json", m.model_dump_json())
         return m
 
     def get(self, mid: str) -> Measurement:

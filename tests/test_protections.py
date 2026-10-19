@@ -111,7 +111,8 @@ def test_corrupt_or_future_protection_file_fails_closed(engine, synthetic_mappin
     value = json.loads(path.read_text())
     value["version"] = 999
     path.write_text(json.dumps(value))
-    with pytest.raises(ValidationError):
+    path.with_name("protections.json.bak").unlink(missing_ok=True)
+    with pytest.raises(EngineError, match="no usable backup"):
         Engine(mapping=synthetic_mapping, data_dir=engine.data_dir)
 
 

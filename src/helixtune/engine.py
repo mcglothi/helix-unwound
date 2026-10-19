@@ -17,7 +17,7 @@ from typing import Literal
 
 import numpy as np
 
-from . import afpx, autotune, equipment, mapping, measurements, safety, targets
+from . import afpx, durable, autotune, equipment, mapping, measurements, safety, targets
 from . import protection_provenance as provenance
 from . import workstation
 from .proposals import Proposal, ProposalConflict, ProposalContext, fingerprint
@@ -123,36 +123,74 @@ class Engine:
         elif cur.exists():
             self.tune = Tune.model_validate_json(cur.read_text())
         self.measurements = measurements.Store(self.data_dir)
+        # Safety-relevant state recovered from a backup is a fault: every DSP write path stays
+        # blocked until the owner acknowledges it (Codex review: never silently run on an older,
+        # possibly weaker policy). Unreadable state with no usable backup refuses to start.
+        self.state_faults: list[str] = []
+
+        def recover(path, parse, what, critical=True):
+            if not path.exists() and not durable.backup_path(path).exists():
+                return None
+            try:
+                value, notice = durable.read_with_backup(path, parse, what)
+            except durable.StateRecoveryError as exc:
+                raise EngineError(str(exc)) from exc
+            if notice:
+                self.recovery_notice = " ".join(x for x in (self.recovery_notice, notice) if x)
+                if critical:
+                    self.state_faults.append(notice)
+            return value
+
         tf = self.data_dir / "targets.json"
-        self.user_targets: list[targets.Target] = (
-            [targets.Target.model_validate(t) for t in json.loads(tf.read_text())] if tf.exists() else [])
+        self.user_targets: list[targets.Target] = recover(
+            tf, lambda t: [targets.Target.model_validate(x) for x in json.loads(t)], "Saved targets", critical=False) or []
         self.target_name = "Car preference"
         df = self.data_dir / "system.json"
-        if df.exists():
-            self.design = equipment.SystemDesign.model_validate_json(df.read_text())
+        design = recover(df, equipment.SystemDesign.model_validate_json, "Equipment design")
+        if design is not None:
+            self.design = design
             if equipment.normalize_ports(self.design):
-                df.write_text(self.design.model_dump_json(indent=2))
+                self._write_design(df)
         else:
             self.design = equipment.seed(self.tune)
-            df.write_text(self.design.model_dump_json(indent=2))
+            self._write_design(df)
         pol = self.data_dir / "safety.json"
-        if pol.exists():
-            raw = json.loads(pol.read_text())
+
+        def parse_policy(text):
+            raw = json.loads(text)
             # fill settings added after this policy file was written, keeping the user's values
             for role, defaults in safety.DEFAULT_ROLES.items():
                 r = raw.setdefault("roles", {}).setdefault(role.value, {})
                 for k, v in defaults.model_dump().items():
                     r.setdefault(k, v)
-            self.policy = safety.SafetyPolicy.model_validate(raw)
-            pol.write_text(self.policy.model_dump_json(indent=2))
-        else:
-            pol.write_text(self.policy.model_dump_json(indent=2))
+            return safety.SafetyPolicy.model_validate(raw)
+        policy = recover(pol, parse_policy, "Safety policy")
+        if policy is not None:
+            self.policy = policy
+        durable.write_with_backup(pol, self.policy.model_dump_json(indent=2), valid=json.loads)
         protection_file = self.data_dir / "protections.json"
-        self.protection_book = provenance.load(protection_file.read_text() if protection_file.exists() else None)
+        book = recover(protection_file, provenance.load, "Output protections")
+        self.protection_book = book if book is not None else provenance.load(None)
         self.protections = self.protection_book.effective()
         self.advisory_protections = self.protection_book.effective(include_advisory=True)
         # Migrate current tune + equipment conservatively; snapshots never own these floors.
         self._persist_protections(self.tune)
+
+    def _write_design(self, path: Path, design: equipment.SystemDesign | None = None) -> None:
+        durable.write_with_backup(path, (design or self.design).model_dump_json(indent=2),
+                                  valid=equipment.SystemDesign.model_validate_json)
+
+    def acknowledge_recovery(self, reason: str) -> dict:
+        """Owner review of state restored from backups; re-enables DSP writes."""
+        with self._lock:
+            if not self.state_faults:
+                raise EngineError("There is no recovered state to acknowledge")
+            if len(reason.strip()) < 8:
+                raise EngineError("Say what you checked (at least 8 characters)")
+            self._log("owner", f"acknowledged recovered state ({'; '.join(self.state_faults)}): {reason.strip()}")
+            self.state_faults = []
+            self.revision += 1
+            return {"ok": True}
 
     @classmethod
     def from_param_map(cls, pm: ParamMap, data_dir: Path) -> "Engine":
@@ -177,6 +215,7 @@ class Engine:
                                   "for a supervised session, or connect read-only")
             session = None
             if client.allow_writes:
+                self._require_no_state_fault()
                 # Writes need PC-Tool's session. Session.open owns the first contact: its baud
                 # recovery must run before identify, or a DSP left at high speed is unreachable.
                 # The emulator answers synchronously; real hardware needs PC-Tool's settle times.
@@ -288,7 +327,13 @@ class Engine:
             self._log("engine", "full push to device", n)
             return n
 
+    def _require_no_state_fault(self):
+        if self.state_faults:
+            raise EngineError("Saved state was restored from a backup: " + " ".join(self.state_faults)
+                              + " Review it and acknowledge the recovery before sending anything to the DSP.")
+
     def _require_writable(self):
+        self._require_no_state_fault()
         if self.client is None:
             raise EngineError("no device attached")
         if not self.device.writes_enabled:
@@ -512,9 +557,7 @@ class Engine:
         of several concurrent writers wins; with overwrite, a temp file replaces the old one."""
         path = self.data_dir / "snapshots" / f"{safe}.json"
         if overwrite:
-            tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-            tmp.write_text(text)
-            os.replace(tmp, path)
+            durable.atomic_write(path, text)
             return
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -603,7 +646,8 @@ class Engine:
         if any(b.name == t.name for b in targets.BUILTINS):
             raise EngineError(f"{t.name!r} is a built-in target; save under another name")
         self.user_targets = [u for u in self.user_targets if u.name != t.name] + [t.model_copy(update={"builtin": False})]
-        (self.data_dir / "targets.json").write_text(json.dumps([u.model_dump() for u in self.user_targets], indent=2))
+        durable.write_with_backup(self.data_dir / "targets.json",
+                                  json.dumps([u.model_dump() for u in self.user_targets], indent=2), valid=json.loads)
 
     def system_view(self, seat: str = "driver", smoothing: float = 6, points: int = 200,
                     target: str | None = None, tune: Tune | None = None) -> dict:
@@ -1026,6 +1070,7 @@ class Engine:
             "demo": self.demo,
             "physical_writes_allowed": self.physical_writes_allowed,
             "master_on_device": self._master_on_device(),
+            "state_faults": list(self.state_faults),
             "unmute_levels": self.unmute_levels(),
             "connection_epoch": self._connection_epoch,
             "device": self.device.__dict__,
@@ -1064,7 +1109,7 @@ class Engine:
                 self.design = equipment.SystemDesign.model_validate_json(path.read_text())
                 raise EngineError("Invalid system design or physical output protection specifications") from exc
             self._save_protections(protections)
-            path.write_text(proposed.model_dump_json(indent=2))
+            self._write_design(path, proposed)
             self.design = proposed
             self.revision += 1
 
@@ -1119,9 +1164,7 @@ class Engine:
         path = self.data_dir / "protections.json"
         encoded = value.model_dump_json(indent=2)
         if not path.exists() or path.read_text() != encoded:
-            temporary = path.with_suffix(".tmp")
-            temporary.write_text(encoded)
-            temporary.replace(path)
+            durable.write_with_backup(path, encoded, valid=provenance.load)
         self.protection_book = value
         self.protections = value.effective()
         self.advisory_protections = value.effective(include_advisory=True)

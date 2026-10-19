@@ -26,6 +26,7 @@ from .access import AccessControl, COOKIE, SessionLimit
 from .proposals import ProposalConflict
 from .safety import OutputProtection
 from .measurements import CaptureDriver, Measurement
+from .durable import atomic_write
 from .measurements import normalise_seat
 from .rew import RewClient, RewError
 
@@ -35,6 +36,10 @@ WEB = Path(__file__).parent / "web"
 # Channel fields a link group shares (captured: gain, mute, polarity). Name, role,
 # routing and delay stay per channel.
 LINKED_CHANNEL_FIELDS = frozenset({"gain_db", "mute", "invert"})
+
+
+class RecoveryAck(BaseModel):
+    reason: str = Field(..., min_length=8, max_length=2000)
 
 
 class UnmuteAtZero(BaseModel):
@@ -378,6 +383,11 @@ def create_app(engine: Engine) -> FastAPI:
     @app.get("/api/protections")
     def get_protections():
         return engine.protection_view()
+
+    @app.post("/api/state/acknowledge-recovery")
+    def acknowledge_recovery(value: RecoveryAck):
+        """Owner-only: confirms state restored from backups was reviewed; re-enables DSP writes."""
+        return engine.acknowledge_recovery(value.reason)
 
     @app.post("/api/protections/constraints/{key}/review")
     def review_protection(key: str, review: ProtectionReview):
@@ -871,13 +881,13 @@ def create_app(engine: Engine) -> FastAPI:
         if sorted(t.palette) != sorted(keys) or not all(re.fullmatch(r"#[0-9a-fA-F]{6}", v) for v in t.palette.values()):
             raise HTTPException(422, "palette needs base00..base0F as #rrggbb")
         rest = [x for x in _themes() if x["name"] != t.name]
-        themes_file.write_text(json.dumps(rest + [t.model_dump()], indent=2))
+        atomic_write(themes_file, json.dumps(rest + [t.model_dump()], indent=2))
         return {"saved": t.name}
 
     @app.delete("/api/themes/{name}")
     def delete_theme(name: str):
         import json
-        themes_file.write_text(json.dumps([x for x in _themes() if x["name"] != name], indent=2))
+        atomic_write(themes_file, json.dumps([x for x in _themes() if x["name"] != name], indent=2))
         return {"ok": True}
 
     # ---- device -----------------------------------------------------------------------

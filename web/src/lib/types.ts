@@ -38,6 +38,8 @@ export interface Status {
   master_on_device?: boolean
   /** output -> level it played at before being muted (this connection); unmuting at or below it is direct */
   unmute_levels?: Record<string, number>
+  /** safety-relevant state restored from a backup; DSP writes stay blocked until acknowledged */
+  state_faults?: string[]
   connection_epoch: number
   device: Device; tune_name: string; revision: number; undo_depth: number; redo_depth?: number
   save_error?: string | null; recovery_notice?: string | null

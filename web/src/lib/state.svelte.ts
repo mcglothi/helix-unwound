@@ -173,6 +173,10 @@ class AppState {
     return this.patchChannel(cid, { mute: false }, opts)
   }
 
+  acknowledgeRecovery(reason: string) {
+    return this.run(api('POST', '/api/state/acknowledge-recovery', { reason }))
+  }
+
   confirmUnmuteAtZero() {
     const review = this.unmuteReview
     if (!review) return

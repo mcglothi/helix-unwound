@@ -270,3 +270,21 @@ def test_a_reversed_polarity_is_reported_instead_of_a_compensating_delay(setup):
     assert e.tune.channel('C').invert is False and e.tune.channel('C').delay_ms == 2.0   # restored
     edits = {(x.channel, x.field): x.value for x in e.proposal(a['proposal_id']).edits}
     assert edits[('C', 'invert')] is True and abs(edits[('C', 'delay_ms')] - 1.0) <= (1000 / FC) / 8 + 1e-9
+
+
+def test_an_edit_between_restore_and_proposal_prevents_the_proposal(setup, monkeypatch):
+    """Codex review of 98c0bda: the proposal must fingerprint the restored measured state."""
+    e, fake = setup
+    fake.ideal_ms = 1.0
+    r = e.prepare_align_run(reference='A', adjust='C', steps=9, seconds=2, settle_s=0.2)
+    r.sleep = lambda s: None
+    clock = [0.0]
+    r.clock = lambda: clock.__setitem__(0, clock[0] + 0.1) or clock[0]
+    real_restore = r._restore
+
+    def restore_then_owner_edit():
+        real_restore()
+        e.edit('owner', 'flip A', lambda t: setattr(t.channel('A'), 'invert', True))
+    monkeypatch.setattr(r, '_restore', restore_then_owner_edit)
+    st = r.execute()
+    assert 'proposal_id' not in st.align and 'changed right after the run' in st.align['outcome']

@@ -282,6 +282,7 @@ class MeasureRun:
                 for cid in st.invert_changed:
                     t.channel(cid).invert = st.original_inverts[cid]
             e.edit('measure', f'measure run {st.id}: restore mutes/delays', fn)
+            self._expected_revision = e.revision          # the restored, measured-from state
         st.restored = True
 
     def execute(self) -> RunState:
@@ -477,7 +478,14 @@ class AlignRun(MeasureRun):
                             f"repeat of the starting delay differed by {a['repeatability_db']} dB). No change proposed; "
                             "try longer averaging or a quieter cabin.")
             return
-        a['proposal_id'] = e.propose_measured_alignment(st, best['offset_ms'], invert=best['inverted'])
+        # Atomic with the revision check: the proposal fingerprints the tune as restored right after
+        # the measurement, never an edit made in between (Codex review of 98c0bda).
+        with e._lock:
+            if self._expected_revision is not None and e.revision != self._expected_revision:
+                a['outcome'] = ('The workstation changed right after the run, so the result no longer matches '
+                                'the measured setup. No change proposed; run it again.')
+                return
+            a['proposal_id'] = e.propose_measured_alignment(st, best['offset_ms'], invert=best['inverted'])
         flip = f" with its polarity flipped (check the speaker wiring too)" if best['inverted'] else ""
         a['outcome'] = (f"Best sum with {a['adjust']} {best['offset_ms']:+.3f} ms{flip}: crossover band "
                         f"+{a['gain_db']} dB vs now. Review the proposal to apply it.")

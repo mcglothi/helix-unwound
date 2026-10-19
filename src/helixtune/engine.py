@@ -17,7 +17,7 @@ from typing import Literal
 
 import numpy as np
 
-from . import afpx, durable, autotune, equipment, mapping, measurements, safety, targets
+from . import afpx, durable, autotune, measure_run, equipment, mapping, measurements, safety, targets
 from . import protection_provenance as provenance
 from . import workstation
 from .proposals import Proposal, ProposalConflict, ProposalContext, fingerprint
@@ -116,6 +116,9 @@ class Engine:
     ab: dict = field(default_factory=lambda: {"A": None, "B": None, "active": None})
     # output -> (level before it was muted, routing/role fingerprint); cleared on (dis)connect
     _muted_at: dict = field(default_factory=dict)
+    # REW access for automated measurement runs (tests inject fakes).
+    rew_control_factory: object = None
+    rew_reader_factory: object = None
     # Off unless `serve --allow-physical-writes`: supervised write sessions on a real DSP.
     physical_writes_allowed: bool = False
     # PC-Tool pings every ~0.85 s inside a session; None disables the pinger (tests).
@@ -193,6 +196,19 @@ class Engine:
         if policy is not None:
             self.policy = policy
         durable.write_with_backup(pol, self.policy.model_dump_json(indent=2), valid=_parse_policy)
+        # A measurement run that was still running (or left mutes unrestored) when the process
+        # stopped is reported, never silently resumed or "fixed".
+        self._measure_run = None
+        self.interrupted_run = None
+        run_file = self.data_dir / measure_run.RUN_FILE
+        if run_file.exists():
+            try:
+                record = json.loads(run_file.read_text())
+                if isinstance(record, dict) and (record.get("status") == "running"
+                                                 or (record.get("changed") and not record.get("restored"))):
+                    self.interrupted_run = record
+            except Exception:
+                self.interrupted_run = {"error": "The last measurement run record could not be read; check output mutes."}
         protection_file = self.data_dir / "protections.json"
         book = recover(protection_file, provenance.load, "Output protections")
         self.protection_book = book if book is not None else provenance.load(None)
@@ -216,6 +232,79 @@ class Engine:
             self._faults_file.unlink(missing_ok=True)
             self.state_faults = []
             self.revision += 1
+            return {"ok": True}
+
+    # ---- automated seat measurement (pink noise + REW RTA, one output at a time) ----------
+
+    def prepare_measure_run(self, *, outputs: list[str], seat: str, seconds: float, settle_s: float,
+                            level_dbfs: float, source: str, port: int = 4735):
+        """Validate and build a run (not started). Owner-only at the API."""
+        from .rew import RewClient
+        with self._lock:
+            self._require_no_state_fault()
+            if self.client is None or not self.device.writes_enabled:
+                raise EngineError("Connect a DSP (or the emulator) with writes enabled to run measurements")
+            if self.device.needs_reconnect or not self.device.baselined or self.device.sync_state != "synchronized":
+                raise EngineError("The DSP must be synchronized with this workstation before measuring")
+            if self._measure_run is not None and self._measure_run.state.status == "running":
+                raise EngineError("A measurement run is already in progress")
+            if self.interrupted_run is not None:
+                raise EngineError("Resolve the interrupted measurement run first (restore or discard its mutes)")
+            ids = [self.tune.channel(c).id for c in outputs]
+            if not ids or len(set(ids)) != len(ids):
+                raise EngineError("Choose one or more different outputs to measure")
+            muted = [c for c in ids if self.tune.channel(c).mute]
+            if muted:
+                raise EngineError(f"Output(s) {', '.join(muted)} are muted; unmute them before measuring")
+            missing = [c for c in ids if not self.driver_identity(c)]
+            if missing:
+                raise EngineError(f"Record the drivers on output(s) {', '.join(missing)} in Setup first")
+            if not 3 <= seconds <= 120 or not 0 <= settle_s <= 5 or not -50 <= level_dbfs <= -6:
+                raise EngineError("Averaging 3-120 s, settle 0-5 s, pink noise level -50 to -6 dBFS")
+            if source not in ("rew", "external"):
+                raise EngineError("Noise source must be 'rew' or 'external'")
+            control = (self.rew_control_factory or measure_run.RewControl)(port)
+            reader = (self.rew_reader_factory or RewClient)(port)
+            state = measure_run.new_state(ids, seat, seconds, settle_s, level_dbfs, source)
+            run = measure_run.MeasureRun(self, state, control, reader)
+            self._measure_run = run
+            return run
+
+    def start_measure_run(self, **kw) -> dict:
+        run = self.prepare_measure_run(**kw)
+        threading.Thread(target=run.execute, name="helix-measure", daemon=True).start()
+        return run.state.view()
+
+    def measure_run_view(self) -> dict | None:
+        return self._measure_run.state.view() if self._measure_run is not None else None
+
+    def stop_measure_run(self) -> dict | None:
+        if self._measure_run is not None:
+            self._measure_run.stop()
+        return self.measure_run_view()
+
+    def resolve_interrupted_measure_run(self, action: str) -> dict:
+        """'restore': undo the interrupted run's mute changes now (needs a synchronized DSP);
+        'discard': forget the record and leave mutes as they are."""
+        with self._lock:
+            record = self.interrupted_run
+            if record is None:
+                raise EngineError("There is no interrupted measurement run")
+            if action == "restore":
+                changed, original = record.get("changed") or [], record.get("original_mutes") or {}
+                if not changed or any(c not in original for c in changed):
+                    raise EngineError("The interrupted run record has no usable mute information; fix mutes by hand")
+                self._require_writable()
+                if self.device.sync_state != "synchronized":
+                    raise EngineError("The DSP must be synchronized before restoring mutes")
+                self.edit("owner", "restore mutes after interrupted measurement run",
+                          lambda t: [setattr(t.channel(c), "mute", bool(original[c])) for c in changed])
+            elif action != "discard":
+                raise EngineError("Choose restore or discard")
+            (self.data_dir / measure_run.RUN_FILE).unlink(missing_ok=True)
+            self.interrupted_run = None
+            self.revision += 1
+            self._log("owner", f"{action} interrupted measurement run")
             return {"ok": True}
 
     @classmethod
@@ -1097,6 +1186,8 @@ class Engine:
             "physical_writes_allowed": self.physical_writes_allowed,
             "master_on_device": self._master_on_device(),
             "state_faults": list(self.state_faults),
+            "measure_run": self.measure_run_view(),
+            "interrupted_measure_run": self.interrupted_run,
             "unmute_levels": self.unmute_levels(),
             "connection_epoch": self._connection_epoch,
             "device": self.device.__dict__,

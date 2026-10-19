@@ -3,6 +3,7 @@
   import Graph from './Graph.svelte'
   import PredictionSummary from './PredictionSummary.svelte'
   import ProposalCard from './ProposalCard.svelte'
+  import MeasureDialog from './MeasureDialog.svelte'
   import type { Role } from '../types'
   import { ROLE_COLORS, ROLE_LABEL } from '../types'
 
@@ -23,6 +24,7 @@
   // A real DSP never receives master (its parameter is unverified), so don't offer it as a control.
   const masterLocal = $derived(app.status?.master_on_device === false)
   const ab = $derived(app.status?.ab)
+  let measuring = $state(false)
   const SEATS = [{ v: 'driver', l: 'Driver' }, { v: 'passenger', l: 'Passenger' }, { v: 'center', l: 'Both seats' }]
 </script>
 
@@ -63,8 +65,9 @@
     </div>
   </section>
 
+  <MeasureDialog bind:open={measuring} />
   <div class="actions">
-    <button class="primary" onclick={() => app.toast('Live measurement arrives with the REW link and the in-truck mic', 'info')}>Measure this seat</button>
+    <button class="primary" onclick={() => (measuring = true)}>Measure this seat</button>
     <button disabled={!(ab?.A && ab?.B)} onclick={() => app.toggleAB()}>
       A / B{#if ab?.active} · on {ab.active}{/if}
     </button>

@@ -348,7 +348,7 @@ partial-open/close failures on hardware. Physical transports still reject every 
 
 Work while hardware captures are pending: next measurement capture planning/verification
 guidance, then broader physical-phone/keyboard/accessibility acceptance. Continue community UI/UX research and test live REW
-compatibility: live acceptance done 2026-10-18 against REW 5.40 beta 135 / API 0.9.8 (see REW.md); a real mic capture is next. Argon's longer-term
+compatibility: live acceptance done 2026-10-18 against REW 5.40 beta 135 / API 0.9.8 (see REW.md). Automated 'Measure this seat' (pink noise + RTA per output) built 2026-10-19 and accepted silently against live REW with the emulator; first truck run with the UMIK-1 (90° cal set in REW) is next. Argon's longer-term
 adaptive/embedded roadmap was reviewed; no USB/HID rewrite, native sweep engine,
 CAN adaptation or autonomous hardware writes were adopted from it.
 

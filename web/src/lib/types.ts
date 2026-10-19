@@ -40,6 +40,9 @@ export interface Status {
   unmute_levels?: Record<string, number>
   /** safety-relevant state restored from a backup; DSP writes stay blocked until acknowledged */
   state_faults?: string[]
+  /** automated seat measurement (pink noise + RTA per output) */
+  measure_run?: MeasureRunState | null
+  interrupted_measure_run?: (Partial<MeasureRunState> & { error?: string }) | null
   connection_epoch: number
   device: Device; tune_name: string; revision: number; undo_depth: number; redo_depth?: number
   save_error?: string | null; recovery_notice?: string | null
@@ -131,4 +134,12 @@ export interface ProtectionConstraint {
   /** yellow tier: reported, not enforced, because a manufacturer minimum governs */
   advisory?: boolean
   history: { action: string; actor: string; reason: string; at: number }[]
+}
+
+export interface MeasureRunState {
+  id: string; outputs: string[]; seat: string; seconds: number; settle_s: number; level_dbfs: number
+  source: 'rew' | 'external'; status: 'running' | 'done' | 'stopped' | 'failed'
+  phase: string; current: string | null; step: number; remaining_s: number
+  captures: { output: string; measurement_id: string; rew_uuid: string }[]
+  error: string | null; changed: string[]; restored: boolean
 }

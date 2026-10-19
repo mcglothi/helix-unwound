@@ -42,6 +42,20 @@ class RecoveryAck(BaseModel):
     reason: str = Field(..., min_length=8, max_length=2000)
 
 
+class MeasureRunReq(BaseModel):
+    outputs: list[str] = Field(..., min_length=1, max_length=10)
+    seat: str = Field('driver', min_length=1, max_length=100)
+    seconds: float = 20.0
+    settle_s: float = 1.0
+    level_dbfs: float = -24.0
+    source: Literal['rew', 'external'] = 'rew'
+    port: int = Field(4735, ge=1024, le=65535)
+
+
+class InterruptedRunAction(BaseModel):
+    action: Literal['restore', 'discard']
+
+
 class UnmuteAtZero(BaseModel):
     # The gains the user reviewed, per affected output. A mismatch means the review is stale.
     reviewed_gain_db: dict[str, float]
@@ -383,6 +397,23 @@ def create_app(engine: Engine) -> FastAPI:
     @app.get("/api/protections")
     def get_protections():
         return engine.protection_view()
+
+    # Automated seat measurement: owner-only (it mutes outputs and drives REW's generator).
+    @app.post("/api/measure/runs")
+    def start_measure_run(value: MeasureRunReq):
+        return engine.start_measure_run(**value.model_dump())
+
+    @app.get("/api/measure/runs/current")
+    def current_measure_run():
+        return engine.measure_run_view()
+
+    @app.post("/api/measure/runs/current/stop")
+    def stop_measure_run():
+        return engine.stop_measure_run()
+
+    @app.post("/api/measure/interrupted")
+    def resolve_interrupted_measure_run(value: InterruptedRunAction):
+        return engine.resolve_interrupted_measure_run(value.action)
 
     @app.post("/api/state/acknowledge-recovery")
     def acknowledge_recovery(value: RecoveryAck):

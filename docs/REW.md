@@ -77,5 +77,23 @@ requires a Pro upgrade license"; the upgrades page does not mention it). Without
 works; "Save current" stores the RTA trace as a REW measurement, which the existing import
 reads. A one-click "Measure this seat" can therefore use pink noise + RTA averaging
 (moving-mic method, common for in-car tuning) without Pro; sweep automation would need Pro.
-Not yet built or tested with a microphone.
+
+**Measure this seat (built 2026-10-19, `helixtune.measure_run`).** Drive view -> *Measure this
+seat*: choose outputs (presets: front drivers, subwoofers, everything playing), seat, averaging
+time and noise source (REW's generator over the Mac's audio, e.g. Bluetooth to SYNC, or noise the
+owner plays). Requires a connected, synchronized DSP, recorded drivers on each output, no
+unacknowledged state fault, every chosen output unmuted, and REW's **RTA window open** (REW only
+analyses input while it is "enabled"; otherwise "Save current" returns "Nothing to save"). Per
+output: one validated engine edit isolates it (no link-group propagation), settle, reset RTA
+averaging, average while the owner moves the mic, "Save current", find the new REW UUID, import
+tagged with the output, seat, exact isolated tune and current drivers (attested in-process),
+magnitude only, `capture_context.kind = measure_run`. Revision/connection changes, Stop, REW
+errors and lost connections abort; cleanup stops generator/RTA and restores only the run's own
+mute changes when the connection is still trustworthy. `measure_run.json` (durable) lets a
+restart report an interrupted run (`status.interrupted_measure_run`, restore or discard).
+Owner-only API: `POST /api/measure/runs`, `GET /api/measure/runs/current`,
+`POST /api/measure/runs/current/stop`, `POST /api/measure/interrupted`. Live acceptance:
+silent run (external source) against REW 5.40 beta 135 with the emulator, outputs A and C,
+3 s each: both captured, current, mutes restored, captures lead the estimate. Not yet run with
+the UMIK-1 in the truck or with REW's generator audible.
 

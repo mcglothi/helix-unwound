@@ -143,7 +143,7 @@ Validation:
 
 ## Milestone 5: durable pending constraints and owner review
 
-✅ COMPLETE (Codex; independent Claude review pending)
+✅ COMPLETE (Codex). **Independent Claude review 2026-10-18: approved.** Probed with throwaway engines: agent review -> 403; a confirmed maker minimum returns to pending when its spec changes (old limit stays enforced) and returning the old value does not restore confirmation; stale fingerprints are refused; clearing needs the source removed and no attached device; a tampered source payload fails closed. Finding (cross-cutting, for the truck/Pi): a truncated `protections.json` (power cut mid-write) makes Engine startup fail with JSONDecodeError. Most state files use plain `write_text` (system.json, safety.json, targets.json, themes, media index) or rename without fsync (protections, snapshots, measurements), while `workstation.py` already has a durable writer (fsync, atomic replace, directory fsync). Use one durable writer everywhere and give corrupt protection state a recovery path that does not brick startup (e.g. start with writes disabled and a clear owner message).
 
 - `protections.json` version 2 stores individual pending/confirmed/cleared constraints with immutable source payloads and review history. Effective A–J output limits remain available to existing safety checks/API consumers.
 - New metadata enforces immediately but cannot claim owner confirmation, even if an agent writes `manufacturer+confirmed` into source text. Only the owner review endpoint confirms exact records, with evidence and a fingerprint binding the current review state.
@@ -160,7 +160,7 @@ Validation:
 
 ## Milestone 6: revocable, expiring browser sessions
 
-✅ COMPLETE (Codex; independent Claude review pending alongside milestone 5)
+✅ COMPLETE (Codex). **Independent Claude review 2026-10-18: approved.** Random 32-byte `hs_` IDs stored as SHA-256 digests, absolute 12 h expiry, capacity/pruning, constant-time credential comparison, HttpOnly/SameSite=Strict cookies (Secure on HTTPS) and an exact same-origin check on cookie mutations hold. Non-blocking: (1) every server restart signs browsers out, so a truck Pi restarting with the ignition needs a sign-in each drive; consider durable paired-device sessions when phone pairing lands (pro-tool direction); (2) expiry uses time.monotonic, which pauses during macOS sleep/Linux suspend, so sleep stretches the 12 h lifetime; (3) the origin check compares against a Host-derived base URL: cookies/bearer tokens block DNS rebinding today, but add a Host allow-list before LAN/phone access.
 
 - Browser cookies now contain independent random `hs_` session IDs, never the permanent owner/agent credential. Only digests and monotonic expiry deadlines are kept in process memory; bearer authentication remains separate.
 - Fixed 12-hour absolute expiry (activity does not extend it). Logout revokes the server record so copied cookies fail; repeated bootstrap replaces that browser's old record. Other browsers remain signed in. Server restart invalidates sessions while preserving role credentials.

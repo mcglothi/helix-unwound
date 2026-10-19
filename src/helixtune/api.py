@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import shutil
 import tempfile
 from pathlib import Path
@@ -448,6 +450,16 @@ def create_app(engine: Engine) -> FastAPI:
     # Link groups (PC-Tool LG): the edited item is copied to every linked channel, as the
     # 2026-10-17 captures show. ?link=false edits one channel only (e.g. callers that
     # already address each channel of a group themselves).
+    def design_locked(fn):
+        """Equipment endpoints edit engine.design in place and then save: hold the engine lock for
+        the whole handler so a measurement capture never sees a half-applied design change
+        (Codex review of 1515015)."""
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            with engine._lock:
+                return fn(*args, **kwargs)
+        return wrapper
+
     def _partners(t, cid: str, link: bool) -> list[str]:
         return [c for c in t.linked(cid) if c != cid.upper()] if link else []
 
@@ -769,6 +781,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.put("/api/design/vehicle")
     @agent_allowed
+    @design_locked
     def put_vehicle(v: eq.Vehicle):
         engine.design.vehicle = v
         engine.save_design()
@@ -781,6 +794,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.post("/api/equipment")
     @agent_allowed
+    @design_locked
     def add_component(c: eq.Component):
         if any(x.id == c.id for x in engine.design.components):
             raise HTTPException(409, f"component {c.id} exists")
@@ -790,6 +804,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.patch("/api/equipment/{cid}")
     @agent_allowed
+    @design_locked
     def patch_component(cid: str, p: ComponentPatch):
         c = engine.design.get(cid)
         upd = p.model_dump(exclude_none=True, exclude={"specs"})
@@ -811,6 +826,7 @@ def create_app(engine: Engine) -> FastAPI:
         return new
 
     @app.delete("/api/equipment/{cid}")
+    @design_locked
     def delete_component(cid: str):
         engine.design.get(cid)
         engine.design.components = [x for x in engine.design.components if x.id != cid]
@@ -820,6 +836,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.put("/api/design/positions")
     @agent_allowed
+    @design_locked
     def put_positions(p: PositionsIn):
         field_name = "flow_pos" if p.view == "flow" else "cab_pos"
         comps = []
@@ -836,6 +853,7 @@ def create_app(engine: Engine) -> FastAPI:
 
     @app.post("/api/connections")
     @agent_allowed
+    @design_locked
     def add_connection(cn: eq.Connection):
         engine.design.get(cn.src)
         engine.design.get(cn.dst)
@@ -844,6 +862,7 @@ def create_app(engine: Engine) -> FastAPI:
         return cn
 
     @app.delete("/api/connections/{cnid}")
+    @design_locked
     def delete_connection(cnid: str):
         engine.design.connections = [x for x in engine.design.connections if x.id != cnid]
         engine.save_design()
@@ -877,6 +896,7 @@ def create_app(engine: Engine) -> FastAPI:
         return lib.update(mid, p.caption, p.tags)
 
     @app.delete("/api/media/{mid}")
+    @design_locked
     def delete_media(mid: str):
         lib.delete(mid)
         # drop references so nothing points at a missing file

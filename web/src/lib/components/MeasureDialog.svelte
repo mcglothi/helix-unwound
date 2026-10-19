@@ -16,7 +16,7 @@
   let chosen = $state<string[]>([])
   let seat = $state('driver')
   let seconds = $state(20)
-  let source = $state<'rew' | 'external'>('rew')
+  let source = $state<'rew' | 'external'>('external')
   let level = $state(-24)
   let error = $state('')
   let busy = $state(false)
@@ -99,9 +99,10 @@
       <label>Listening position<select bind:value={seat}><option value="driver">Driver</option><option value="passenger">Passenger</option><option value="center">Center</option></select></label>
       <label>Averaging per output<select bind:value={seconds}>{#each [10, 15, 20, 30, 45] as s}<option value={s}>{s} seconds</option>{/each}</select></label>
       <label>Pink noise<select bind:value={source}>
-        <option value="rew">REW plays it (Mac audio to the truck, e.g. Bluetooth to SYNC)</option>
-        <option value="external">I'll play pink noise myself</option>
+        <option value="external">I'll play it from my phone (the way I normally listen)</option>
+        <option value="rew">REW plays it from the Mac (e.g. Bluetooth to SYNC)</option>
       </select></label>
+      {#if source === 'external'}<p class="muted">Start a full-range pink noise track on your phone before you press Start, and keep it playing until the run finishes. A reference file from REW (Generator → pink noise → save as WAV) is more trustworthy than streaming tracks, which are often filtered.</p>{/if}
       {#if source === 'rew'}<label>REW level<select bind:value={level}>{#each [-36, -30, -24, -18, -12] as l}<option value={l}>{l} dBFS</option>{/each}</select></label>{/if}
       <p class="muted">Start with the volume low and raise it until the measurement is well above the cabin noise. Each output plays alone; the DSP's crossovers stay in place. Results are magnitude only (no timing or phase).</p>
       <button class="primary" disabled={!chosen.length} onclick={start}>Start: {chosen.length} output(s), about {Math.ceil(chosen.length * (seconds + 3) / 60)} min</button>

@@ -131,6 +131,7 @@ class MeasureRun:
         self._expected_revision: int | None = None
         self._epoch = engine._connection_epoch
 
+
     # -- persistence (survives process death) ---------------------------------------------
     def _save(self) -> None:
         durable.atomic_write(self.engine.data_dir / RUN_FILE, json.dumps(self.state.view(), indent=2))
@@ -167,15 +168,20 @@ class MeasureRun:
         self.state.phase = 'isolating'
         with e._lock:
             self._check_unchanged()
+            plan = {ch.id: ch.id != target for ch in e.tune.channels
+                    if ch.mute != (ch.id != target) and (ch.id != target or ch.id in st.changed)}
+            # Recovery intent first: if the process dies after the DSP write but before the next
+            # save, the record already names every output this step may have changed.
+            for cid in plan:
+                if cid not in st.changed:
+                    st.changed.append(cid)
+            self._save()
 
             def fn(t):
-                for ch in t.channels:
-                    want_mute = ch.id != target
-                    if ch.mute != want_mute and (want_mute or ch.id in st.changed):
-                        ch.mute = want_mute
-                        if ch.id not in st.changed:
-                            st.changed.append(ch.id)
-            e.edit('measure', f'measure run: isolate {target}', fn)
+                for cid, mute in plan.items():
+                    t.channel(cid).mute = mute
+            if plan:
+                e.edit('measure', f'measure run: isolate {target}', fn)
             self._expected_revision = e.revision
         self._save()
 
@@ -189,6 +195,7 @@ class MeasureRun:
         self.rew.rta('Save current')
         new: set[str] = set()
         for _ in range(50):
+            self._check_unchanged()                     # Stop/drift stay responsive while waiting
             new = self.rew.measurement_uuids() - before
             if new:
                 break
@@ -197,6 +204,7 @@ class MeasureRun:
             raise MeasureError('REW did not save exactly one new RTA measurement')
         uid = next(iter(new))
         st.phase = 'importing'
+        self._check_unchanged()
         preview, arrays = self.reader.capture(uid)
         with e._lock:
             self._check_unchanged()
@@ -236,6 +244,11 @@ class MeasureRun:
                 st.error = (st.error or '') + ' Mutes were NOT restored: the connection is not trustworthy; ' \
                             f'outputs {", ".join(st.changed)} may still be muted by this run.'
                 return
+            # Another edit during the run: its mutes can no longer be told apart from the owner's.
+            if self._expected_revision is not None and e.revision != self._expected_revision:
+                st.error = (st.error or '') + ' Mutes were NOT restored automatically because the workstation ' \
+                            'was changed during the run; review outputs ' + ", ".join(st.changed) + ' and restore or keep them.'
+                return
 
             def fn(t):
                 for cid in st.changed:
@@ -246,6 +259,8 @@ class MeasureRun:
     def execute(self) -> RunState:
         e, st = self.engine, self.state
         noise = st.source == 'rew'
+        final: Status = 'failed'
+        started_noise = False
         try:
             with e._lock:
                 self._check_unchanged()
@@ -253,23 +268,26 @@ class MeasureRun:
                 self._expected_revision = e.revision
             self._save()
             self.rew.prepare(st.level_dbfs, noise)
-            if noise:
-                self.rew.generator(True)
-            self.rew.rta('Start')
             for i, target in enumerate(st.outputs):
                 st.step, st.current = i, target
                 self._isolate(target)
+                if i == 0:
+                    # Noise only after the first output is isolated, never through every speaker.
+                    if noise:
+                        self.rew.generator(True)
+                        started_noise = True
+                    self.rew.rta('Start')
                 self._wait(st.settle_s, 'settling')
                 self._capture(target)
-            st.status = 'done'
+            final = 'done'
         except MeasureError as exc:
-            st.status = 'stopped' if self._stop.is_set() else 'failed'
+            final = 'stopped' if self._stop.is_set() else 'failed'
             st.error = str(exc)
         except Exception as exc:                                  # REW, engine or I/O failure
-            st.status = 'failed'
+            final = 'failed'
             st.error = f'{type(exc).__name__}: {exc}'
         finally:
-            for action in ((lambda: self.rew.generator(False)) if noise else None, lambda: self.rew.rta('Stop')):
+            for action in ((lambda: self.rew.generator(False)) if started_noise else None, lambda: self.rew.rta('Stop')):
                 if action is None:
                     continue
                 try:
@@ -281,7 +299,11 @@ class MeasureRun:
             except Exception as exc:
                 st.error = (st.error or '') + f' Restoring mutes failed ({exc}).'
             st.phase, st.current, st.remaining_s = 'done', None, 0.0
+            # Terminal only now: a new run cannot be admitted while this one is still cleaning up.
+            st.status = final
             self._save()
+            if st.changed and not st.restored:
+                e.interrupted_run = st.view()               # owner decides: restore or keep
         return st
 
 

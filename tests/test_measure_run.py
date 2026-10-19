@@ -25,12 +25,16 @@ class FakeRew:
         self.engine, self.log, self.rows, self.data = engine, [], [], {}
         self.save_creates = True
         self.rta_window_open = True
+        self.hooks = {}            # (path, command) -> callable run before replying
+        self.unmuted_at_play = None
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         body = json.loads(req.content) if req.content else None
         path = req.url.path
         assert req.url.host == '127.0.0.1'
         self.log.append((req.method, path, body))
+        if req.method == 'GET' and path == '/measurements' and ('GET', '/measurements') in self.hooks:
+            self.hooks[('GET', '/measurements')]()
         if req.method == 'GET' and path == '/doc.json':
             return httpx.Response(200, json={'info': {'version': 'fake'}, 'paths': {
                 '/measurements': {}, '/measurements/{id}/frequency-response': {}}})
@@ -40,6 +44,11 @@ class FakeRew:
             return httpx.Response(200, json=self.rows)
         if req.method == 'GET' and path.endswith('/frequency-response'):
             return httpx.Response(200, json=self.data[path.split('/')[2]])
+        hook = self.hooks.get((path, (body or {}).get('command') if isinstance(body, dict) else None))
+        if hook:
+            hook()
+        if path == '/generator/command' and body == {'command': 'Play'}:
+            self.unmuted_at_play = [c.id for c in self.engine.tune.channels if not c.mute]
         if path == '/rta/command' and body == {'command': 'Save current'} and self.save_creates:
             playing = [c.id for c in self.engine.tune.channels if not c.mute]
             uid = str(uuid.uuid4())
@@ -138,7 +147,10 @@ def test_a_concurrent_edit_aborts_the_run(setup):
         if calls[0] == 2:
             e.edit('owner', 'someone else', lambda t: setattr(t.channel('C'), 'gain_db', -2.0))
     st = run(e, ['A', 'C'], sleep=sleep)
-    assert st.status == 'failed' and 'changed during the run' in st.error and st.restored
+    # Codex review of 1515015: after someone else's edit the run's mutes cannot be told apart
+    # from the owner's, so nothing is restored automatically; the owner decides.
+    assert st.status == 'failed' and 'changed during the run' in st.error and not st.restored
+    assert 'NOT restored automatically' in st.error and e.status()['interrupted_measure_run']['changed'] == st.changed
 
 
 def test_a_lost_connection_aborts_without_blind_restoration(setup):
@@ -212,3 +224,62 @@ def test_a_closed_rta_window_is_reported_before_anything_is_muted(setup):
     st = run(e, ['C'])
     assert st.status == 'failed' and "RTA window" in st.error
     assert {c.id: c.mute for c in e.tune.channels} == before and st.changed == []
+
+
+# ---- Codex review of 1515015 ----------------------------------------------------------------
+
+def test_noise_starts_only_after_the_first_output_is_isolated(setup):
+    e, fake = setup
+    run(e, ['C', 'D'])
+    assert fake.unmuted_at_play == ['C']
+
+
+def test_no_second_run_can_start_while_the_first_is_cleaning_up(setup):
+    e, fake = setup
+    seen = {}
+
+    def try_second():
+        try:
+            e.prepare_measure_run(outputs=['D'], seat='driver', seconds=3, settle_s=0.5, level_dbfs=-24, source='rew')
+            seen['second'] = 'admitted'
+        except EngineError as exc:
+            seen['second'] = str(exc)
+    fake.hooks[('/generator/command', 'Stop')] = try_second
+    assert run(e, ['C']).status == 'done'
+    assert 'already in progress' in seen['second']
+
+
+def test_recovery_intent_is_recorded_before_the_isolating_edit(setup, monkeypatch):
+    e, _ = setup
+    real_edit = e.edit
+    seen = {}
+
+    def edit(source, summary, fn):
+        if summary.startswith('measure run: isolate'):
+            seen['record'] = json.loads((e.data_dir / measure_run.RUN_FILE).read_text())
+            raise RuntimeError('process died here')
+        return real_edit(source, summary, fn)
+    monkeypatch.setattr(e, 'edit', edit)
+    st = run(e, ['A'])
+    assert st.status == 'failed' and sorted(seen['record']['changed']) == ['B', 'C', 'D', 'E', 'F']
+    assert seen['record']['status'] == 'running'
+
+
+def test_stop_is_honoured_while_waiting_for_rew_to_save(setup):
+    e, fake = setup
+    fake.save_creates = False
+    polls = [0]
+    holder = {}
+
+    def on_list():
+        polls[0] += 1
+        if polls[0] == 3:
+            holder['r'].stop()
+    fake.hooks[('GET', '/measurements')] = on_list
+    r = e.prepare_measure_run(outputs=['C'], seat='driver', seconds=3, settle_s=0.5, level_dbfs=-24, source='rew')
+    holder['r'] = r
+    r.sleep = lambda s: None
+    clock = [0.0]
+    r.clock = lambda: clock.__setitem__(0, clock[0] + 0.1) or clock[0]
+    st = r.execute()
+    assert st.status == 'stopped' and polls[0] < 10, st.error

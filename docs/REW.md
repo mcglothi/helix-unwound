@@ -97,3 +97,21 @@ silent run (external source) against REW 5.40 beta 135 with the emulator, output
 3 s each: both captured, current, mutes restored, captures lead the estimate. Not yet run with
 the UMIK-1 in the truck or with REW's generator audible.
 
+**Time alignment by crossover summing (built 2026-10-19).** Measure dialog -> *Time alignment*:
+choose a reference output, the output whose delay is adjusted, and outputs to carry with it (so
+already-aligned pairs keep their relation). The pair needs a shared crossover (one output's
+low-pass meeting the other's high-pass; fc = their geometric mean). Steps (odd, default 9) span
+about one period of fc around the current delay (delays never go negative). Sequence: every
+output muted -> RTA noise floor; pair isolated; for each step a validated delay edit (recovery
+intent saved first), settle, reset averaging, average with the **mic held still**, read the live
+RTA average (`/rta/captured-data`, no REW measurement saved) and score the power mean over
+fc/2..2fc on a log grid; then the starting delay is measured again. Guards (from a live run that
+scored cabin noise): the loudest step must be >= 10 dB above the floor, and a proposal is made
+only if the best gain beats max(0.5 dB, 2 x the repeat difference). Delays and mutes are restored
+under the same ownership/trust rules as measurement runs; the result is an `alignment`
+**proposal** (delay edits with before-values) for owner review, never applied by the run.
+Magnitude-based: it optimises how fully the pair sums at that seat, not timing or phase.
+Owner-only `POST /api/measure/align`. Live: silent runs against REW 5.40 beta 135 with the
+emulator confirmed the data path and that cabin noise is refused; not yet run with pink noise in
+the truck.
+

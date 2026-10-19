@@ -54,6 +54,20 @@ class MeasureRunReq(BaseModel):
     port: int = Field(4735, ge=1024, le=65535)
 
 
+class AlignRunReq(BaseModel):
+    reference: str
+    adjust: str
+    carry: list[str] = Field(default_factory=list, max_length=8)
+    seat: str = Field('driver', min_length=1, max_length=100)
+    steps: int = 9
+    span_ms: float | None = None
+    seconds: float = 6.0
+    settle_s: float = 0.5
+    level_dbfs: float = -24.0
+    source: Literal['rew', 'external'] = 'external'
+    port: int = Field(4735, ge=1024, le=65535)
+
+
 class InterruptedRunAction(BaseModel):
     action: Literal['restore', 'discard']
 
@@ -404,6 +418,10 @@ def create_app(engine: Engine) -> FastAPI:
     @app.post("/api/measure/runs")
     def start_measure_run(value: MeasureRunReq):
         return engine.start_measure_run(**value.model_dump())
+
+    @app.post("/api/measure/align")
+    def start_align_run(value: AlignRunReq):
+        return engine.start_align_run(**value.model_dump())
 
     @app.get("/api/measure/runs/current")
     def current_measure_run():

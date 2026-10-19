@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Callable, Literal
 
 import httpx
+import numpy as np
 
 from . import durable, measurements
 from .proposals import fingerprint
@@ -85,6 +86,17 @@ class RewControl:
     def rta(self, command: Literal['Start', 'Stop', 'Reset averaging', 'Save current']) -> None:
         self._send('POST', '/rta/command', {'command': command})
 
+    def rta_average(self) -> tuple[np.ndarray, np.ndarray]:
+        """The RTA's current average (SPL) without saving a REW measurement."""
+        data = self._send('GET', '/rta/captured-data?unit=SPL')
+        if not isinstance(data, dict) or 'magnitude' not in data:
+            raise RewError('REW has no RTA data yet; is the RTA window open and running?')
+        spl = RewClient._array(data['magnitude'])
+        start, step = float(data.get('startFreq', 0)), float(data.get('freqStep', 0))
+        if step <= 0 or len(spl) < 16:
+            raise RewError('Unsupported REW RTA data spacing')
+        return start + step * np.arange(len(spl)), spl
+
     def measurement_uuids(self) -> set[str]:
         rows = self._send('GET', '/measurements')
         if isinstance(rows, dict):
@@ -115,6 +127,11 @@ class RunState:
     changed: list[str] = field(default_factory=list)
     restored: bool = False
     started_at: float = field(default_factory=time.time)
+    kind: Literal['measure', 'align'] = 'measure'
+    # delay changes the run owns (time alignment), restored like mutes
+    original_delays: dict[str, float] = field(default_factory=dict)
+    delay_changed: list[str] = field(default_factory=list)
+    align: dict | None = None          # parameters, per-step results and the outcome
 
     def view(self) -> dict:
         return asdict(self)
@@ -166,13 +183,15 @@ class MeasureRun:
             self.sleep(min(0.1, left))
 
     # -- steps ------------------------------------------------------------------------------
-    def _isolate(self, target: str) -> None:
+    def _isolate(self, target: str | set[str]) -> None:
         e, st = self.engine, self.state
+        playing = {target} if isinstance(target, str) else set(target)
+        target = "+".join(sorted(playing))
         self.state.phase = 'isolating'
         with e._lock:
             self._check_unchanged()
-            plan = {ch.id: ch.id != target for ch in e.tune.channels
-                    if ch.mute != (ch.id != target) and (ch.id != target or ch.id in st.changed)}
+            plan = {ch.id: ch.id not in playing for ch in e.tune.channels
+                    if ch.mute != (ch.id not in playing) and (ch.id not in playing or ch.id in st.changed)}
             # Recovery intent first: if the process dies after the DSP write but before the next
             # save, the record already names every output this step may have changed.
             for cid in plan:
@@ -237,15 +256,15 @@ class MeasureRun:
         """Undo only the run's own mute changes, and only on a trustworthy connection."""
         e, st = self.engine, self.state
         st.phase = 'restoring'
-        if not st.changed:
+        if not st.changed and not st.delay_changed:
             st.restored = True
             return
         with e._lock:
             trustworthy = (e.client is not None and e._connection_epoch == self._epoch
                            and not e.device.needs_reconnect and e.device.sync_state == 'synchronized')
             if not trustworthy:
-                st.error = (st.error or '') + ' Mutes were NOT restored: the connection is not trustworthy; ' \
-                            f'outputs {", ".join(st.changed)} may still be muted by this run.'
+                st.error = (st.error or '') + ' Mutes/delays were NOT restored: the connection is not trustworthy; ' \
+                            f'outputs {", ".join(sorted(set(st.changed) | set(st.delay_changed)))} may still differ.'
                 return
             # Another edit during the run: its mutes can no longer be told apart from the owner's.
             if self._expected_revision is not None and e.revision != self._expected_revision:
@@ -256,7 +275,9 @@ class MeasureRun:
             def fn(t):
                 for cid in st.changed:
                     t.channel(cid).mute = st.original_mutes[cid]
-            e.edit('measure', f'measure run {st.id}: restore mutes', fn)
+                for cid in st.delay_changed:
+                    t.channel(cid).delay_ms = st.original_delays[cid]
+            e.edit('measure', f'measure run {st.id}: restore mutes/delays', fn)
         st.restored = True
 
     def execute(self) -> RunState:
@@ -271,17 +292,15 @@ class MeasureRun:
                 self._expected_revision = e.revision
             self._save()
             self.rew.prepare(st.level_dbfs, noise)
-            for i, target in enumerate(st.outputs):
-                st.step, st.current = i, target
-                self._isolate(target)
-                if i == 0:
-                    # Noise only after the first output is isolated, never through every speaker.
-                    if noise:
-                        started_noise = True            # before Play: a timed-out Play still gets a Stop
-                        self.rew.generator(True)
-                    self.rew.rta('Start')
-                self._wait(st.settle_s, 'settling')
-                self._capture(target)
+
+            def begin_noise():
+                nonlocal started_noise
+                # Noise only after the first isolation, never through every speaker.
+                if noise:
+                    started_noise = True                # before Play: a timed-out Play still gets a Stop
+                    self.rew.generator(True)
+                self.rew.rta('Start')
+            self._body(begin_noise)
             final = 'done'
         except MeasureError as exc:
             final = 'stopped' if self._stop.is_set() else 'failed'
@@ -300,17 +319,136 @@ class MeasureRun:
             try:
                 self._restore()
             except Exception as exc:
-                st.error = (st.error or '') + f' Restoring mutes failed ({exc}).'
+                st.error = (st.error or '') + f' Restoring mutes/delays failed ({exc}).'
+            if final == 'done':
+                try:
+                    self._finish()
+                except Exception as exc:
+                    st.error = (st.error or '') + f' Could not prepare the result ({exc}).'
             with e._lock:                                   # admission takes the same lock
                 st.phase, st.current, st.remaining_s = 'done', None, 0.0
                 st.status = final
                 try:
                     self._save()
                 finally:
-                    if st.changed and not st.restored:
+                    if (st.changed or st.delay_changed) and not st.restored:
                         e.interrupted_run = st.view()       # owner decides: restore or keep
                     self.active = False
         return st
+
+
+    def _body(self, begin_noise) -> None:
+        st = self.state
+        for i, target in enumerate(st.outputs):
+            st.step, st.current = i, target
+            self._isolate(target)
+            if i == 0:
+                begin_noise()
+            self._wait(st.settle_s, 'settling')
+            self._capture(target)
+
+    def _finish(self) -> None:
+        """Hook for results after a completed, restored run."""
+
+
+def band_level_db(freqs: np.ndarray, spl: np.ndarray, lo: float, hi: float, points: int = 48) -> float:
+    """Power mean (dB) of the spectrum over [lo, hi], sampled on a log grid so each octave
+    counts equally regardless of the FFT's linear bin spacing."""
+    grid = np.geomspace(lo, hi, points)
+    level = np.interp(grid, freqs, spl)
+    return float(10 * np.log10(np.mean(10 ** (level / 10))))
+
+
+class AlignRun(MeasureRun):
+    """Crossover summing alignment for one pair: play reference + adjusted output together, step
+    the adjusted output's delay (and any carried outputs) across about one period of the crossover
+    frequency, score how fully the pair sums through the crossover band, then restore everything
+    and offer the best delay as a proposal. The microphone stays still at the head position."""
+
+    def _set_delays(self, offset_ms: float) -> None:
+        e, st = self.engine, self.state
+        a = st.align
+        with e._lock:
+            self._check_unchanged()
+            wanted = {cid: round(st.original_delays[cid] + offset_ms, 4) for cid in [a['adjust'], *a['carry']]}
+            for cid in wanted:                                   # recovery intent before the DSP write
+                if cid not in st.delay_changed:
+                    st.delay_changed.append(cid)
+            self._save()
+            e.edit('measure', f"alignment run: {a['adjust']} {offset_ms:+.3f} ms",
+                   lambda t: [setattr(t.channel(c), 'delay_ms', v) for c, v in wanted.items()])
+            self._expected_revision = e.revision
+        self._save()
+
+    MIN_SIGNAL_DB = 10.0         # pair must play this far above the all-muted noise floor
+
+    def _band(self) -> float:
+        a, st = self.state.align, self.state
+        self._wait(st.settle_s, 'settling')
+        self.rew.rta('Reset averaging')
+        self._wait(st.seconds, 'averaging')
+        self._check_unchanged()
+        freqs, spl = self.rew.rta_average()
+        return round(band_level_db(freqs, spl, a['fc'] / 2, a['fc'] * 2), 2)
+
+    def _body(self, begin_noise) -> None:
+        st = self.state
+        a = st.align
+        with self.engine._lock:
+            st.original_delays = {c: self.engine.tune.channel(c).delay_ms for c in [a['adjust'], *a['carry']]}
+        # Noise floor first, with every output muted (a dead source or low volume must not
+        # produce a "best" delay from cabin noise - found live 2026-10-19).
+        st.current = 'noise floor'
+        self._isolate(set())
+        begin_noise()
+        a['floor_db'] = self._band()
+        st.current = f"{a['reference']}+{a['adjust']}"
+        self._isolate({a['reference'], a['adjust']})
+        for i, off in enumerate(a['offsets']):
+            st.step = i
+            self._set_delays(off)
+            a['results'].append({'offset_ms': off, 'band_db': self._band()})
+            self._save()
+        # Judged on the loudest step: the sweep legitimately passes through a deep cancellation.
+        loudest = max(r['band_db'] for r in a['results'])
+        if loudest < a['floor_db'] + self.MIN_SIGNAL_DB:
+            raise MeasureError(f"The pair was only {loudest - a['floor_db']:.1f} dB above the cabin noise "
+                               f"(need {self.MIN_SIGNAL_DB:g}); is the pink noise playing and the volume up?")
+        # Repeat the starting delay: the difference shows how repeatable the measurement is.
+        self._set_delays(0.0)
+        a['repeat_db'] = self._band()
+        self._save()
+
+    def _finish(self) -> None:
+        e, st, a = self.engine, self.state, self.state.align
+        if not st.restored or not a['results']:
+            return
+        best = max(a['results'], key=lambda r: r['band_db'])
+        current = min(a['results'], key=lambda r: abs(r['offset_ms']))
+        a['best_offset_ms'], a['gain_db'] = best['offset_ms'], round(best['band_db'] - current['band_db'], 2)
+        a['spread_db'] = round(max(r['band_db'] for r in a['results']) - min(r['band_db'] for r in a['results']), 2)
+        a['repeatability_db'] = round(abs(a.get('repeat_db', current['band_db']) - current['band_db']), 2)
+        threshold = max(0.5, 2 * a['repeatability_db'])
+        if abs(best['offset_ms']) < 1e-9:
+            a['outcome'] = 'Already aligned: the current delay summed best. No change proposed.'
+            return
+        if a['gain_db'] < threshold:
+            a['outcome'] = (f"Best gain {a['gain_db']} dB is within measurement noise (needs {threshold:.2f} dB: "
+                            f"repeat of the starting delay differed by {a['repeatability_db']} dB). No change proposed; "
+                            "try longer averaging or a quieter cabin.")
+            return
+        a['proposal_id'] = e.propose_measured_alignment(st, best['offset_ms'])
+        a['outcome'] = (f"Best sum with {a['adjust']} {best['offset_ms']:+.3f} ms: crossover band "
+                        f"+{a['gain_db']} dB vs now. Review the proposal to apply it.")
+
+
+def new_align_state(reference: str, adjust: str, carry: list[str], seat: str, fc: float, offsets: list[float],
+                    seconds: float, settle_s: float, level_dbfs: float, source: Literal['rew', 'external']) -> RunState:
+    st = new_state([reference, adjust], seat, seconds, settle_s, level_dbfs, source)
+    st.kind = 'align'
+    st.align = {'reference': reference, 'adjust': adjust, 'carry': carry, 'fc': fc, 'offsets': offsets,
+                'results': [], 'method': 'RTA pink-noise sum of the pair over fc/2..2fc (magnitude); mic held still'}
+    return st
 
 
 def new_state(outputs: list[str], seat: str, seconds: float, settle_s: float, level_dbfs: float,

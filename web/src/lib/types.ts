@@ -142,4 +142,9 @@ export interface MeasureRunState {
   phase: string; current: string | null; step: number; remaining_s: number
   captures: { output: string; measurement_id: string; rew_uuid: string }[]
   error: string | null; changed: string[]; restored: boolean
+  kind?: 'measure' | 'align'
+  delay_changed?: string[]
+  align?: { reference: string; adjust: string; carry: string[]; fc: number; offsets: number[]
+            results: { offset_ms: number; band_db: number }[]; best_offset_ms?: number; gain_db?: number
+            outcome?: string; proposal_id?: string } | null
 }

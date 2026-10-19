@@ -204,8 +204,8 @@ class Engine:
         if run_file.exists():
             try:
                 record = json.loads(run_file.read_text())
-                if isinstance(record, dict) and (record.get("status") == "running"
-                                                 or (record.get("changed") and not record.get("restored"))):
+                if isinstance(record, dict) and (record.get("status") == "running" or (
+                        (record.get("changed") or record.get("delay_changed")) and not record.get("restored"))):
                     self.interrupted_run = record
             except Exception:
                 self.interrupted_run = {"error": "The last measurement run record could not be read; check output mutes."}
@@ -236,20 +236,98 @@ class Engine:
 
     # ---- automated seat measurement (pink noise + REW RTA, one output at a time) ----------
 
+    def _acoustic_run_preconditions(self) -> None:
+        self._require_no_state_fault()
+        if self.client is None or not self.device.writes_enabled:
+            raise EngineError("Connect a DSP (or the emulator) with writes enabled to run measurements")
+        if self.device.needs_reconnect or not self.device.baselined or self.device.sync_state != "synchronized":
+            raise EngineError("The DSP must be synchronized with this workstation before measuring")
+        if self._measure_run is not None and self._measure_run.active:
+            raise EngineError("A measurement run is already in progress")
+        if self.interrupted_run is not None:
+            raise EngineError("Resolve the interrupted measurement run first (restore or discard its changes)")
+
+    def prepare_align_run(self, *, reference: str, adjust: str, carry: list[str] | None = None, seat: str = "driver",
+                          steps: int = 9, span_ms: float | None = None, seconds: float = 6.0, settle_s: float = 0.5,
+                          level_dbfs: float = -24.0, source: str = "external", port: int = 4735):
+        """Crossover summing alignment for one pair (not started). Owner-only at the API."""
+        from .rew import RewClient
+        with self._lock:
+            self._acoustic_run_preconditions()
+            ref, adj = self.tune.channel(reference), self.tune.channel(adjust)
+            carry_ids = [self.tune.channel(c).id for c in (carry or [])]
+            if ref.id == adj.id or ref.id in carry_ids or adj.id in carry_ids or len(set(carry_ids)) != len(carry_ids):
+                raise EngineError("Choose two different outputs; carried outputs must be distinct from the pair")
+            for ch in (ref, adj):
+                if ch.mute:
+                    raise EngineError(f"Output {ch.id} is muted; unmute it before aligning")
+                if not self.driver_identity(ch.id):
+                    raise EngineError(f"Record the drivers on output {ch.id} in Setup first")
+            # The pair's crossover: where one output's low-pass meets the other's high-pass.
+            candidates = [x.freq_hz for x in (ref.lp, adj.hp, adj.lp, ref.hp) if x is not None]
+            fc = None
+            for lp, hp in ((ref.lp, adj.hp), (adj.lp, ref.hp)):
+                if lp is not None and hp is not None:
+                    fc = (lp.freq_hz * hp.freq_hz) ** 0.5
+                    break
+            if fc is None:
+                raise EngineError(f"{ref.id} and {adj.id} do not share a crossover (one needs a low-pass and the other "
+                                  "a high-pass); set the crossover first" + ("" if candidates else ""))
+            if not 3 <= steps <= 21 or steps % 2 == 0:
+                raise EngineError("Steps must be an odd number from 3 to 21")
+            span = span_ms if span_ms is not None else min(10.0, max(0.5, 1000.0 / fc))   # about one period
+            if not 0.2 <= span <= 10 or not 2 <= seconds <= 30 or not 0 <= settle_s <= 5 or not -50 <= level_dbfs <= -6:
+                raise EngineError("Span 0.2-10 ms, 2-30 s per step, settle 0-5 s, level -50 to -6 dBFS")
+            if source not in ("rew", "external"):
+                raise EngineError("Noise source must be 'rew' or 'external'")
+            half = span / 2
+            offsets = [round(-half + i * span / (steps - 1), 4) for i in range(steps)]
+            base = {c: self.tune.channel(c).delay_ms for c in [adj.id, *carry_ids]}
+            offsets = [o for o in offsets if all(base[c] + o >= 0 for c in base)]     # delays cannot go negative
+            if 0.0 not in offsets:
+                offsets = sorted(set(offsets + [0.0]))
+            if len(offsets) < 3:
+                raise EngineError(f"{adj.id} has too little delay to search earlier; add delay to it (or to "
+                                  f"{ref.id}'s side) first, or narrow the span")
+            state = measure_run.new_align_state(ref.id, adj.id, carry_ids, seat, round(fc, 1), offsets,
+                                                seconds, settle_s, level_dbfs, source)
+            run = measure_run.AlignRun(self, state, (self.rew_control_factory or measure_run.RewControl)(port),
+                                       (self.rew_reader_factory or RewClient)(port))
+            self._measure_run = run
+            return run
+
+    def start_align_run(self, **kw) -> dict:
+        run = self.prepare_align_run(**kw)
+        threading.Thread(target=run.execute, name="helix-align", daemon=True).start()
+        return run.state.view()
+
+    def propose_measured_alignment(self, state, offset_ms: float) -> str:
+        """Turn an alignment run's best offset into a reviewed proposal (never applied here)."""
+        from .proposals import Edit, Proposal
+        a = state.align
+        with self._lock:
+            edits = []
+            for cid in [a["adjust"], *a["carry"]]:
+                before = state.original_delays[cid]
+                after = round(before + offset_ms, 4)
+                edits.append(Edit(channel=cid, field="delay_ms", value=after, before=before,
+                                  label=f"{cid} delay {before:.3f} → {after:.3f} ms ({offset_ms:+.3f})"))
+            p = Proposal(kind="alignment", title=f"Align {a['adjust']} to {a['reference']} at {a['fc']:g} Hz",
+                         edits=edits, metrics={"gain_db": a.get("gain_db"), "results": a["results"],
+                                               "fc_hz": a["fc"], "seat": state.seat, "run": state.id},
+                         notes=[f"Measured: pink noise + RTA at the {state.seat} seat with the mic held still; the pair "
+                                f"summed {a.get('gain_db')} dB louder through {a['fc']/2:g}-{a['fc']*2:g} Hz.",
+                                "Magnitude-based: listen afterwards and re-measure; other seats and pairs may shift."])
+            p.context = self._context(None, {}, [], driver_channels=[a["reference"], a["adjust"]])
+            p.context.inputs = {}
+            return self._store_proposal(p, "measure")["id"]
+
     def prepare_measure_run(self, *, outputs: list[str], seat: str, seconds: float, settle_s: float,
                             level_dbfs: float, source: str, port: int = 4735):
         """Validate and build a run (not started). Owner-only at the API."""
         from .rew import RewClient
         with self._lock:
-            self._require_no_state_fault()
-            if self.client is None or not self.device.writes_enabled:
-                raise EngineError("Connect a DSP (or the emulator) with writes enabled to run measurements")
-            if self.device.needs_reconnect or not self.device.baselined or self.device.sync_state != "synchronized":
-                raise EngineError("The DSP must be synchronized with this workstation before measuring")
-            if self._measure_run is not None and self._measure_run.active:
-                raise EngineError("A measurement run is already in progress")
-            if self.interrupted_run is not None:
-                raise EngineError("Resolve the interrupted measurement run first (restore or discard its mutes)")
+            self._acoustic_run_preconditions()
             ids = [self.tune.channel(c).id for c in outputs]
             if not ids or len(set(ids)) != len(ids):
                 raise EngineError("Choose one or more different outputs to measure")
@@ -292,13 +370,20 @@ class Engine:
                 raise EngineError("There is no interrupted measurement run")
             if action == "restore":
                 changed, original = record.get("changed") or [], record.get("original_mutes") or {}
-                if not changed or any(c not in original for c in changed):
-                    raise EngineError("The interrupted run record has no usable mute information; fix mutes by hand")
+                dchanged, dorig = record.get("delay_changed") or [], record.get("original_delays") or {}
+                if (not changed and not dchanged) or any(c not in original for c in changed) \
+                        or any(c not in dorig for c in dchanged):
+                    raise EngineError("The interrupted run record has no usable restore information; fix it by hand")
                 self._require_writable()
                 if self.device.sync_state != "synchronized":
-                    raise EngineError("The DSP must be synchronized before restoring mutes")
-                self.edit("owner", "restore mutes after interrupted measurement run",
-                          lambda t: [setattr(t.channel(c), "mute", bool(original[c])) for c in changed])
+                    raise EngineError("The DSP must be synchronized before restoring")
+
+                def fn(t):
+                    for c in changed:
+                        t.channel(c).mute = bool(original[c])
+                    for c in dchanged:
+                        t.channel(c).delay_ms = float(dorig[c])
+                self.edit("owner", "restore mutes/delays after interrupted measurement run", fn)
             elif action != "discard":
                 raise EngineError("Choose restore or discard")
             (self.data_dir / measure_run.RUN_FILE).unlink(missing_ok=True)

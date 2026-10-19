@@ -20,6 +20,12 @@
   let level = $state(-24)
   let error = $state('')
   let busy = $state(false)
+  let mode = $state<'measure' | 'align'>('measure')
+  let reference = $state('')
+  let adjust = $state('')
+  let carry = $state<string[]>([])
+  let steps = $state(9)
+  let stepSeconds = $state(6)
 
   const run = $derived(app.status?.measure_run ?? null)
   const running = $derived(run?.status === 'running')
@@ -50,6 +56,14 @@
     catch (e: any) { error = e.message }
     finally { await app.poll(); busy = false }
   }
+  async function startAlign() {
+    busy = true; error = ''
+    try {
+      await request('POST', '/api/measure/align', { reference, adjust, carry, seat, steps, seconds: stepSeconds,
+                                                    level_dbfs: level, source })
+    } catch (e: any) { error = e.message }
+    finally { await app.poll(); busy = false }
+  }
   async function stop() {
     try { await request('POST', '/api/measure/runs/current/stop') } catch (e: any) { error = e.message }
     await app.poll()
@@ -75,6 +89,22 @@
       </div>
       {#if !synced}<p class="muted">Connect and synchronize the DSP to restore.</p>{/if}
     </section>
+  {:else if running && run && run.kind === 'align' && run.align}
+    <section class="live" aria-live="polite">
+      <p class="step">Aligning <strong>{nameOf(run.align.adjust)}</strong> to <strong>{nameOf(run.align.reference)}</strong> at {run.align.fc} Hz
+        · step {run.step + 1} of {run.align.offsets.length} ({run.align.offsets[run.step] > 0 ? '+' : ''}{run.align.offsets[run.step]?.toFixed(2)} ms)</p>
+      <p class="phase">{PHASE[run.phase] === PHASE.averaging ? 'Measuring — hold the mic still at your head' : (PHASE[run.phase] ?? run.phase)}</p>
+      {#if run.phase === 'averaging'}<p class="count mono">{Math.ceil(run.remaining_s)}<small> s</small></p>{/if}
+      {#if run.align.results.length}
+        <div class="bars">{#each run.align.results as r}
+          {@const lo = Math.min(...run.align.results.map((x) => x.band_db))}
+          <div class="bar"><span class="mono">{r.offset_ms > 0 ? '+' : ''}{r.offset_ms.toFixed(2)}</span>
+            <i style="width:{Math.max(4, (r.band_db - lo + 1) * 12)}px"></i><span class="mono">{r.band_db.toFixed(1)} dB</span></div>
+        {/each}</div>
+      {/if}
+      <p class="muted">Keep the mic still at your head position for every step, so only the delay changes between them.</p>
+      <button class="stop" onclick={stop}>Stop</button>
+    </section>
   {:else if running && run}
     <section class="live" aria-live="polite">
       <p class="step">Output {run.step + 1} of {run.outputs.length}: <strong>{run.current ? nameOf(run.current) : ''}</strong></p>
@@ -86,12 +116,36 @@
   {:else}
     {#if run && run.status !== 'running'}
       <section class={run.status === 'done' ? 'ok' : 'warn'} role="status">
-        <h3>{run.status === 'done' ? `Measured ${run.captures.length} output(s)` : run.status === 'stopped' ? 'Stopped' : 'Run failed'}</h3>
+        <h3>{run.status === 'done' ? (run.kind === 'align' ? 'Alignment measured' : `Measured ${run.captures.length} output(s)`) : run.status === 'stopped' ? 'Stopped' : 'Run failed'}</h3>
+        {#if run.kind === 'align' && run.align?.outcome}<p>{run.align.outcome}</p>{/if}
         {#if run.captures.length}<p>{run.captures.map((c) => c.output).join(', ')} added to your measurements and the estimate.</p>{/if}
         {#if run.error}<p>{run.error}</p>{/if}
       </section>
     {/if}
     {#if !synced}<p class="muted">Connect to the DSP with writes enabled and send your tune first; each output is isolated by muting the others.</p>{/if}
+    <div class="row modes" role="group" aria-label="What to do">
+      <button class:on={mode === 'measure'} aria-pressed={mode === 'measure'} onclick={() => mode = 'measure'}>Measure outputs</button>
+      <button class:on={mode === 'align'} aria-pressed={mode === 'align'} onclick={() => mode = 'align'}>Time alignment</button>
+    </div>
+    {#if mode === 'align'}
+    <fieldset disabled={busy || !synced}>
+      <legend>Align a crossover pair</legend>
+      <p class="muted">Plays the two outputs together and steps one output's delay a fraction of a millisecond at a time, keeping the setting where they add up most fully through their crossover. The result is a proposal you review; nothing changes by itself.</p>
+      <label>Reference (stays as is)<select bind:value={reference}><option value="">Choose…</option>{#each playing as c}<option value={c.id}>{nameOf(c.id)}</option>{/each}</select></label>
+      <label>Adjust this output's delay<select bind:value={adjust}><option value="">Choose…</option>{#each playing.filter((c) => c.id !== reference) as c}<option value={c.id}>{nameOf(c.id)}</option>{/each}</select></label>
+      <div><span class="muted">Move these with it (keeps pairs you've already aligned together)</span>
+        <div class="outs">{#each playing.filter((c) => c.id !== reference && c.id !== adjust) as c}<label><input type="checkbox" bind:group={carry} value={c.id} />{nameOf(c.id)}</label>{/each}</div></div>
+      <label>Listening position<select bind:value={seat}><option value="driver">Driver</option><option value="passenger">Passenger</option><option value="center">Center</option></select></label>
+      <label>Steps<select bind:value={steps}>{#each [7, 9, 13, 17] as n}<option value={n}>{n}</option>{/each}</select></label>
+      <label>Averaging per step<select bind:value={stepSeconds}>{#each [4, 6, 8, 12] as n}<option value={n}>{n} seconds</option>{/each}</select></label>
+      <label>Pink noise<select bind:value={source}>
+        <option value="external">I'll play it from my phone (the way I normally listen)</option>
+        <option value="rew">REW plays it from the Mac (e.g. Bluetooth to SYNC)</option>
+      </select></label>
+      <p class="muted">Hold the mic still at your head position for the whole sweep. Both outputs need a shared crossover (one's low-pass meeting the other's high-pass).</p>
+      <button class="primary" disabled={!reference || !adjust} onclick={startAlign}>Start alignment: {steps} steps, about {Math.ceil(steps * (stepSeconds + 1) / 60)} min</button>
+    </fieldset>
+    {:else}
     <fieldset disabled={busy || !synced}>
       <legend>Which outputs?</legend>
       <div class="row">{#each presets as p}<button class:on={p.ids.join() === chosen.join()} onclick={() => chosen = [...p.ids]}>{p.l}</button>{/each}</div>
@@ -107,6 +161,7 @@
       <p class="muted">Start with the volume low and raise it until the measurement is well above the cabin noise. Each output plays alone; the DSP's crossovers stay in place. Results are magnitude only (no timing or phase).</p>
       <button class="primary" disabled={!chosen.length} onclick={start}>Start: {chosen.length} output(s), about {Math.ceil(chosen.length * (seconds + 3) / 60)} min</button>
     </fieldset>
+    {/if}
   {/if}
   {#if error}<p role="alert">{error}</p>{/if}
 </dialog>
@@ -132,4 +187,8 @@
   .warn { border: 1px solid var(--caution); border-radius: 8px; padding: 12px; margin: 12px 0; }
   .ok { border: 1px solid var(--line-2); border-radius: 8px; padding: 12px; margin: 12px 0; }
   p { margin: 0; font-size: 13px; line-height: 1.5; }
+  .modes { margin: 12px 0; }
+  .bars { display: grid; gap: 3px; justify-items: start; margin: 6px auto; }
+  .bar { display: grid; grid-template-columns: 56px auto 64px; align-items: center; gap: 8px; font-size: 12px; }
+  .bar i { display: block; height: 10px; background: var(--accent); border-radius: 3px; }
 </style>

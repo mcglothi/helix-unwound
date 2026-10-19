@@ -103,11 +103,11 @@ already-aligned pairs keep their relation). The pair needs a shared crossover (o
 low-pass meeting the other's high-pass; fc = their geometric mean). Steps (odd, default 9) span
 about one period of fc around the current delay (delays never go negative). Sequence: every
 output muted -> RTA noise floor; pair isolated; for each step a validated delay edit (recovery
-intent saved first), settle, reset averaging, average with the **mic held still**, read the live
+intent saved first), swept twice (adjusted output's polarity as set, then flipped), settle, reset averaging, average with the **mic held still**, read the live
 RTA average (`/rta/captured-data`, no REW measurement saved) and score the power mean over
-fc/2..2fc on a log grid; then the starting delay is measured again. Guards (from a live run that
+fc/2..2fc on a log grid; then the winning setting and the starting delay are each measured again. A half-period delay only mimics a polarity flip near fc, so the broadband score separates a reversed driver from a timing error; a winning flip is proposed with the delay and flagged. Guards (from a live run that
 scored cabin noise): the loudest step must be >= 10 dB above the floor, and a proposal is made
-only if the best gain beats max(0.5 dB, 2 x the repeat difference). Delays and mutes are restored
+only if the twice-measured gain beats max(0.5 dB, 2 x the larger repeat difference); the shared crossover must be one low-pass meeting the other's high-pass within an octave; the proposal is bound to the capture-time processing and drivers of every involved output (Codex review of 92bb761). Delays and mutes are restored
 under the same ownership/trust rules as measurement runs; the result is an `alignment`
 **proposal** (delay edits with before-values) for owner review, never applied by the run.
 Magnitude-based: it optimises how fully the pair sums at that seat, not timing or phase.

@@ -92,13 +92,13 @@
   {:else if running && run && run.kind === 'align' && run.align}
     <section class="live" aria-live="polite">
       <p class="step">Aligning <strong>{nameOf(run.align.adjust)}</strong> to <strong>{nameOf(run.align.reference)}</strong> at {run.align.fc} Hz
-        · step {run.step + 1} of {run.align.offsets.length} ({run.align.offsets[run.step] > 0 ? '+' : ''}{run.align.offsets[run.step]?.toFixed(2)} ms)</p>
+        · step {run.step + 1} of {run.align.offsets.length * 2}{run.step >= run.align.offsets.length ? ' (polarity flipped)' : ''}</p>
       <p class="phase">{PHASE[run.phase] === PHASE.averaging ? 'Measuring — hold the mic still at your head' : (PHASE[run.phase] ?? run.phase)}</p>
       {#if run.phase === 'averaging'}<p class="count mono">{Math.ceil(run.remaining_s)}<small> s</small></p>{/if}
       {#if run.align.results.length}
         <div class="bars">{#each run.align.results as r}
           {@const lo = Math.min(...run.align.results.map((x) => x.band_db))}
-          <div class="bar"><span class="mono">{r.offset_ms > 0 ? '+' : ''}{r.offset_ms.toFixed(2)}</span>
+          <div class="bar"><span class="mono">{r.offset_ms > 0 ? '+' : ''}{r.offset_ms.toFixed(2)}{r.inverted ? ' ⇅' : ''}</span>
             <i style="width:{Math.max(4, (r.band_db - lo + 1) * 12)}px"></i><span class="mono">{r.band_db.toFixed(1)} dB</span></div>
         {/each}</div>
       {/if}
@@ -130,7 +130,7 @@
     {#if mode === 'align'}
     <fieldset disabled={busy || !synced}>
       <legend>Align a crossover pair</legend>
-      <p class="muted">Plays the two outputs together and steps one output's delay a fraction of a millisecond at a time, keeping the setting where they add up most fully through their crossover. The result is a proposal you review; nothing changes by itself.</p>
+      <p class="muted">Plays the two outputs together and steps one output's delay a fraction of a millisecond at a time — once with its polarity as set and once flipped — keeping the setting where they add up most fully through their crossover. A flip that wins usually means a speaker is wired backwards. The result is a proposal you review; nothing changes by itself.</p>
       <label>Reference (stays as is)<select bind:value={reference}><option value="">Choose…</option>{#each playing as c}<option value={c.id}>{nameOf(c.id)}</option>{/each}</select></label>
       <label>Adjust this output's delay<select bind:value={adjust}><option value="">Choose…</option>{#each playing.filter((c) => c.id !== reference) as c}<option value={c.id}>{nameOf(c.id)}</option>{/each}</select></label>
       <div><span class="muted">Move these with it (keeps pairs you've already aligned together)</span>
@@ -143,7 +143,7 @@
         <option value="rew">REW plays it from the Mac (e.g. Bluetooth to SYNC)</option>
       </select></label>
       <p class="muted">Hold the mic still at your head position for the whole sweep. Both outputs need a shared crossover (one's low-pass meeting the other's high-pass).</p>
-      <button class="primary" disabled={!reference || !adjust} onclick={startAlign}>Start alignment: {steps} steps, about {Math.ceil(steps * (stepSeconds + 1) / 60)} min</button>
+      <button class="primary" disabled={!reference || !adjust} onclick={startAlign}>Start alignment: {steps * 2 + 3} measurements, about {Math.ceil((steps * 2 + 3) * (stepSeconds + 1) / 60)} min</button>
     </fieldset>
     {:else}
     <fieldset disabled={busy || !synced}>

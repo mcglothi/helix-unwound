@@ -131,6 +131,8 @@ class RunState:
     # delay changes the run owns (time alignment), restored like mutes
     original_delays: dict[str, float] = field(default_factory=dict)
     delay_changed: list[str] = field(default_factory=list)
+    original_inverts: dict[str, bool] = field(default_factory=dict)
+    invert_changed: list[str] = field(default_factory=list)
     align: dict | None = None          # parameters, per-step results and the outcome
 
     def view(self) -> dict:
@@ -256,7 +258,7 @@ class MeasureRun:
         """Undo only the run's own mute changes, and only on a trustworthy connection."""
         e, st = self.engine, self.state
         st.phase = 'restoring'
-        if not st.changed and not st.delay_changed:
+        if not st.changed and not st.delay_changed and not st.invert_changed:
             st.restored = True
             return
         with e._lock:
@@ -264,7 +266,7 @@ class MeasureRun:
                            and not e.device.needs_reconnect and e.device.sync_state == 'synchronized')
             if not trustworthy:
                 st.error = (st.error or '') + ' Mutes/delays were NOT restored: the connection is not trustworthy; ' \
-                            f'outputs {", ".join(sorted(set(st.changed) | set(st.delay_changed)))} may still differ.'
+                            f'outputs {", ".join(sorted(set(st.changed) | set(st.delay_changed) | set(st.invert_changed)))} may still differ.'
                 return
             # Another edit during the run: its mutes can no longer be told apart from the owner's.
             if self._expected_revision is not None and e.revision != self._expected_revision:
@@ -277,6 +279,8 @@ class MeasureRun:
                     t.channel(cid).mute = st.original_mutes[cid]
                 for cid in st.delay_changed:
                     t.channel(cid).delay_ms = st.original_delays[cid]
+                for cid in st.invert_changed:
+                    t.channel(cid).invert = st.original_inverts[cid]
             e.edit('measure', f'measure run {st.id}: restore mutes/delays', fn)
         st.restored = True
 
@@ -331,7 +335,7 @@ class MeasureRun:
                 try:
                     self._save()
                 finally:
-                    if (st.changed or st.delay_changed) and not st.restored:
+                    if (st.changed or st.delay_changed or st.invert_changed) and not st.restored:
                         e.interrupted_run = st.view()       # owner decides: restore or keep
                     self.active = False
         return st
@@ -391,11 +395,24 @@ class AlignRun(MeasureRun):
         freqs, spl = self.rew.rta_average()
         return round(band_level_db(freqs, spl, a['fc'] / 2, a['fc'] * 2), 2)
 
+    def _set_invert(self, cid: str, invert: bool) -> None:
+        e, st = self.engine, self.state
+        with e._lock:
+            self._check_unchanged()
+            if cid not in st.invert_changed:
+                st.invert_changed.append(cid)                  # recovery intent first
+            self._save()
+            e.edit('measure', f"alignment run: {cid} polarity {'inverted' if invert else 'normal'}",
+                   lambda t: setattr(t.channel(cid), 'invert', invert))
+            self._expected_revision = e.revision
+        self._save()
+
     def _body(self, begin_noise) -> None:
         st = self.state
         a = st.align
         with self.engine._lock:
             st.original_delays = {c: self.engine.tune.channel(c).delay_ms for c in [a['adjust'], *a['carry']]}
+            st.original_inverts = {a['adjust']: self.engine.tune.channel(a['adjust']).invert}
         # Noise floor first, with every output muted (a dead source or low volume must not
         # produce a "best" delay from cabin noise - found live 2026-10-19).
         st.current = 'noise floor'
@@ -404,17 +421,35 @@ class AlignRun(MeasureRun):
         a['floor_db'] = self._band()
         st.current = f"{a['reference']}+{a['adjust']}"
         self._isolate({a['reference'], a['adjust']})
-        for i, off in enumerate(a['offsets']):
-            st.step = i
-            self._set_delays(off)
-            a['results'].append({'offset_ms': off, 'band_db': self._band()})
-            self._save()
+        # Sweep both polarities of the adjusted output: a half-period delay mimics a polarity flip
+        # only near fc, so the broadband band score separates a reversed driver from a timing error.
+        start = st.original_inverts[a['adjust']]
+        step = 0
+        for invert in (start, not start):
+            if invert != start:
+                self._set_invert(a['adjust'], invert)
+            for off in a['offsets']:
+                st.step = step
+                step += 1
+                self._set_delays(off)
+                a['results'].append({'offset_ms': off, 'inverted': invert != start, 'band_db': self._band()})
+                self._save()
+        if self.engine.tune.channel(a['adjust']).invert != start:
+            self._set_invert(a['adjust'], start)
         # Judged on the loudest step: the sweep legitimately passes through a deep cancellation.
         loudest = max(r['band_db'] for r in a['results'])
         if loudest < a['floor_db'] + self.MIN_SIGNAL_DB:
             raise MeasureError(f"The pair was only {loudest - a['floor_db']:.1f} dB above the cabin noise "
                                f"(need {self.MIN_SIGNAL_DB:g}); is the pink noise playing and the volume up?")
-        # Repeat the starting delay: the difference shows how repeatable the measurement is.
+        # Re-measure the winner and the start: one transient must not decide the result, and the
+        # two repeat differences show how repeatable these measurements are (Codex review).
+        best = max(a['results'], key=lambda r: r['band_db'])
+        if best['inverted']:
+            self._set_invert(a['adjust'], not start)
+        self._set_delays(best['offset_ms'])
+        a['confirm_db'] = self._band()
+        if best['inverted']:
+            self._set_invert(a['adjust'], start)
         self._set_delays(0.0)
         a['repeat_db'] = self._band()
         self._save()
@@ -424,12 +459,17 @@ class AlignRun(MeasureRun):
         if not st.restored or not a['results']:
             return
         best = max(a['results'], key=lambda r: r['band_db'])
-        current = min(a['results'], key=lambda r: abs(r['offset_ms']))
-        a['best_offset_ms'], a['gain_db'] = best['offset_ms'], round(best['band_db'] - current['band_db'], 2)
+        current = min((r for r in a['results'] if not r['inverted']), key=lambda r: abs(r['offset_ms']))
+        a['best_inverted'] = best['inverted']
+        a['best_offset_ms'] = best['offset_ms']
         a['spread_db'] = round(max(r['band_db'] for r in a['results']) - min(r['band_db'] for r in a['results']), 2)
-        a['repeatability_db'] = round(abs(a.get('repeat_db', current['band_db']) - current['band_db']), 2)
+        baseline = (current['band_db'] + a.get('repeat_db', current['band_db'])) / 2
+        confirmed = (best['band_db'] + a.get('confirm_db', best['band_db'])) / 2
+        a['repeatability_db'] = round(max(abs(a.get('repeat_db', current['band_db']) - current['band_db']),
+                                          abs(a.get('confirm_db', best['band_db']) - best['band_db'])), 2)
+        a['gain_db'] = round(confirmed - baseline, 2)        # both settings measured twice
         threshold = max(0.5, 2 * a['repeatability_db'])
-        if abs(best['offset_ms']) < 1e-9:
+        if abs(best['offset_ms']) < 1e-9 and not best['inverted']:
             a['outcome'] = 'Already aligned: the current delay summed best. No change proposed.'
             return
         if a['gain_db'] < threshold:
@@ -437,8 +477,9 @@ class AlignRun(MeasureRun):
                             f"repeat of the starting delay differed by {a['repeatability_db']} dB). No change proposed; "
                             "try longer averaging or a quieter cabin.")
             return
-        a['proposal_id'] = e.propose_measured_alignment(st, best['offset_ms'])
-        a['outcome'] = (f"Best sum with {a['adjust']} {best['offset_ms']:+.3f} ms: crossover band "
+        a['proposal_id'] = e.propose_measured_alignment(st, best['offset_ms'], invert=best['inverted'])
+        flip = f" with its polarity flipped (check the speaker wiring too)" if best['inverted'] else ""
+        a['outcome'] = (f"Best sum with {a['adjust']} {best['offset_ms']:+.3f} ms{flip}: crossover band "
                         f"+{a['gain_db']} dB vs now. Review the proposal to apply it.")
 
 

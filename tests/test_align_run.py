@@ -28,18 +28,25 @@ class SummingRew(FakeRew):
         super().__init__(engine)
         self.reference, self.adjust, self.ideal_ms = reference, adjust, ideal_ms
         self.signal, self.floor, self.jitter, self.reads = 77.0, 40.0, 0.0, 0
+        self.polarity_reversed, self.spike_on_read = False, None
 
     def handler(self, req):
         if req.method == 'GET' and req.url.path == '/rta/captured-data':
             self.log.append((req.method, req.url.path, None))
             playing = {c.id for c in self.engine.tune.channels if not c.mute}
             dt = (self.engine.tune.channel(self.adjust).delay_ms - self.ideal_ms) / 1000
-            level = self.signal + 10 * np.log10(2 + 2 * np.cos(2 * np.pi * FC * dt) + 1e-3)
+            flipped = self.engine.tune.channel(self.adjust).invert != self.polarity_reversed
+            sign = -1 if flipped else 1
+            f = np.arange(4096, dtype=float)
+            # Frequency-dependent comb: two equal drivers summing with a time offset (and polarity).
+            level = self.signal + 10 * np.log10(2 + sign * 2 * np.cos(2 * np.pi * f * dt) + 1e-3)
             if not playing:
-                level = self.floor
+                level = np.full(4096, self.floor)
             self.reads += 1
-            level += self.jitter * (1 if self.reads % 2 else -1)
-            spl = np.full(4096, level, dtype='>f4')
+            level = level + self.jitter * (1 if self.reads % 2 else -1)
+            if self.spike_on_read == self.reads:
+                level = level + 15.0
+            spl = level.astype('>f4')
             return httpx.Response(200, json={'unit': 'SPL', 'startFreq': 0.0, 'freqStep': 1.0,
                                              'magnitude': base64.b64encode(spl.tobytes()).decode()})
         return super().handler(req)
@@ -92,7 +99,7 @@ def test_finds_the_summing_delay_restores_everything_and_proposes_it(setup):
     assert abs((edits['C'][1] - edits['C'][0]) - (edits['E'][1] - edits['E'][0])) < 1e-9   # carried together
     e.apply_proposal(a['proposal_id'], 'owner')
     assert abs(e.tune.channel('C').delay_ms - (2.0 + a['best_offset_ms'])) < 1e-9
-    assert fake.commands('/rta/command').count('Reset averaging') == len(a['offsets']) + 2   # + floor + repeat
+    assert fake.commands('/rta/command').count('Reset averaging') == 2 * len(a['offsets']) + 3   # floor, both polarities, confirm, repeat
 
 
 def test_only_the_pair_plays_during_the_sweep(setup):
@@ -168,7 +175,7 @@ def test_recovery_intent_is_recorded_before_the_delay_edit(setup, monkeypatch):
 
 
 @pytest.mark.parametrize('kw, match', [
-    (dict(reference='A', adjust='E'), 'do not share a crossover'),
+    (dict(reference='A', adjust='E'), 'do not share one clear crossover'),
     (dict(reference='A', adjust='C', steps=8), 'odd number'),
     (dict(reference='A', adjust='A'), 'two different outputs'),
     (dict(reference='A', adjust='C', carry=['A']), 'distinct'),
@@ -215,3 +222,51 @@ def test_an_unrepeatable_measurement_makes_no_proposal(setup):
     st = align(e)
     assert st.status == 'done' and 'proposal_id' not in st.align and 'measurement noise' in st.align['outcome']
     assert st.align['repeatability_db'] > 0
+
+
+# ---- Codex review of 92bb761 ------------------------------------------------------------------
+
+def test_the_proposal_is_bound_to_capture_time_processing_of_every_involved_output(setup):
+    e, fake = setup
+    fake.ideal_ms = 1.0
+    st = align(e, carry=['E'])
+    pid = st.align['proposal_id']
+    p = e.proposal(pid)
+    assert set(p.context.inputs) == {'A', 'C', 'E'} and set(p.context.drivers) == {'A', 'C', 'E'}
+    for change in (lambda t: setattr(t.channel('A'), 'delay_ms', 0.5),
+                   lambda t: setattr(t.channel('C'), 'invert', True),
+                   lambda t: setattr(t.channel('E'), 'gain_db', -1.0)):
+        snapshot = e.tune.model_copy(deep=True)
+        e.edit('owner', 'change', change)
+        assert e.proposal_conflicts(p), 'a changed input must refuse the proposal'
+        e.tune = snapshot
+
+
+def test_a_single_transient_cannot_win(setup):
+    e, fake = setup
+    fake.ideal_ms = 2.0                                     # already aligned
+    fake.spike_on_read = 2                                  # read 1 = floor, read 2 = first sweep step
+    st = align(e)
+    assert 'proposal_id' not in st.align
+    assert st.align['gain_db'] < 8                          # the winner's re-measurement halves the spike's claim
+
+
+def test_unrelated_filter_edges_are_not_a_crossover(setup):
+    e, _ = setup
+    e.edit('owner', 'far apart', lambda t: (setattr(t.channel('A'), 'lp', Crossover(type=XoType.LINKWITZ_RILEY,
+                                                                                     slope_db=24, freq_hz=80)),
+                                            setattr(t.channel('C'), 'hp', Crossover(type=XoType.LINKWITZ_RILEY,
+                                                                                     slope_db=24, freq_hz=3000))))
+    with pytest.raises(EngineError, match='one clear crossover'):
+        e.prepare_align_run(reference='A', adjust='C')
+
+
+def test_a_reversed_polarity_is_reported_instead_of_a_compensating_delay(setup):
+    e, fake = setup
+    fake.polarity_reversed = True                           # the driver is wired backwards
+    st = align(e)
+    a = st.align
+    assert st.status == 'done' and a['best_inverted'] and 'polarity flipped' in a['outcome']
+    assert e.tune.channel('C').invert is False and e.tune.channel('C').delay_ms == 2.0   # restored
+    edits = {(x.channel, x.field): x.value for x in e.proposal(a['proposal_id']).edits}
+    assert edits[('C', 'invert')] is True and abs(edits[('C', 'delay_ms')] - 1.0) <= (1000 / FC) / 8 + 1e-9

@@ -205,7 +205,8 @@ class Engine:
             try:
                 record = json.loads(run_file.read_text())
                 if isinstance(record, dict) and (record.get("status") == "running" or (
-                        (record.get("changed") or record.get("delay_changed")) and not record.get("restored"))):
+                        (record.get("changed") or record.get("delay_changed") or record.get("invert_changed"))
+                        and not record.get("restored"))):
                     self.interrupted_run = record
             except Exception:
                 self.interrupted_run = {"error": "The last measurement run record could not be read; check output mutes."}
@@ -263,16 +264,15 @@ class Engine:
                     raise EngineError(f"Output {ch.id} is muted; unmute it before aligning")
                 if not self.driver_identity(ch.id):
                     raise EngineError(f"Record the drivers on output {ch.id} in Setup first")
-            # The pair's crossover: where one output's low-pass meets the other's high-pass.
-            candidates = [x.freq_hz for x in (ref.lp, adj.hp, adj.lp, ref.hp) if x is not None]
-            fc = None
-            for lp, hp in ((ref.lp, adj.hp), (adj.lp, ref.hp)):
-                if lp is not None and hp is not None:
-                    fc = (lp.freq_hz * hp.freq_hz) ** 0.5
-                    break
-            if fc is None:
-                raise EngineError(f"{ref.id} and {adj.id} do not share a crossover (one needs a low-pass and the other "
-                                  "a high-pass); set the crossover first" + ("" if candidates else ""))
+            # The pair's crossover: one output's low-pass meeting the other's high-pass within an
+            # octave. Unrelated filter edges (e.g. LP 80 Hz vs HP 3 kHz) are not a crossover, and two
+            # plausible meetings are ambiguous (Codex review of 92bb761).
+            meetings = [(lp.freq_hz * hp.freq_hz) ** 0.5 for lp, hp in ((ref.lp, adj.hp), (adj.lp, ref.hp))
+                        if lp is not None and hp is not None and 0.5 <= lp.freq_hz / hp.freq_hz <= 2.0]
+            if len(meetings) != 1:
+                raise EngineError(f"{ref.id} and {adj.id} do not share one clear crossover (one output's low-pass must "
+                                  "meet the other's high-pass within an octave); check their crossovers first")
+            fc = meetings[0]
             if not 3 <= steps <= 21 or steps % 2 == 0:
                 raise EngineError("Steps must be an odd number from 3 to 21")
             span = span_ms if span_ms is not None else min(10.0, max(0.5, 1000.0 / fc))   # about one period
@@ -301,7 +301,7 @@ class Engine:
         threading.Thread(target=run.execute, name="helix-align", daemon=True).start()
         return run.state.view()
 
-    def propose_measured_alignment(self, state, offset_ms: float) -> str:
+    def propose_measured_alignment(self, state, offset_ms: float, invert: bool = False) -> str:
         """Turn an alignment run's best offset into a reviewed proposal (never applied here)."""
         from .proposals import Edit, Proposal
         a = state.align
@@ -312,14 +312,21 @@ class Engine:
                 after = round(before + offset_ms, 4)
                 edits.append(Edit(channel=cid, field="delay_ms", value=after, before=before,
                                   label=f"{cid} delay {before:.3f} → {after:.3f} ms ({offset_ms:+.3f})"))
+            if invert:
+                was = state.original_inverts[a["adjust"]]
+                edits.append(Edit(channel=a["adjust"], field="invert", value=not was, before=was,
+                                  label=f"{a['adjust']} polarity {'inverted' if was else 'normal'} → "
+                                        f"{'normal' if was else 'inverted'} (summed better flipped; check wiring)"))
             p = Proposal(kind="alignment", title=f"Align {a['adjust']} to {a['reference']} at {a['fc']:g} Hz",
                          edits=edits, metrics={"gain_db": a.get("gain_db"), "results": a["results"],
                                                "fc_hz": a["fc"], "seat": state.seat, "run": state.id},
                          notes=[f"Measured: pink noise + RTA at the {state.seat} seat with the mic held still; the pair "
                                 f"summed {a.get('gain_db')} dB louder through {a['fc']/2:g}-{a['fc']*2:g} Hz.",
                                 "Magnitude-based: listen afterwards and re-measure; other seats and pairs may shift."])
-            p.context = self._context(None, {}, [], driver_channels=[a["reference"], a["adjust"]])
-            p.context.inputs = {}
+            # Bound to the capture-time processing (filters, EQ, level, mute, routing, delay, polarity)
+            # and drivers of every output involved: any change refuses the proposal (Codex review).
+            involved = [a["reference"], a["adjust"], *a["carry"]]
+            p.context = self._context(state.seat, {}, involved, driver_channels=involved)
             return self._store_proposal(p, "measure")["id"]
 
     def prepare_measure_run(self, *, outputs: list[str], seat: str, seconds: float, settle_s: float,
@@ -371,8 +378,9 @@ class Engine:
             if action == "restore":
                 changed, original = record.get("changed") or [], record.get("original_mutes") or {}
                 dchanged, dorig = record.get("delay_changed") or [], record.get("original_delays") or {}
-                if (not changed and not dchanged) or any(c not in original for c in changed) \
-                        or any(c not in dorig for c in dchanged):
+                ichanged, iorig = record.get("invert_changed") or [], record.get("original_inverts") or {}
+                if (not changed and not dchanged and not ichanged) or any(c not in original for c in changed) \
+                        or any(c not in dorig for c in dchanged) or any(c not in iorig for c in ichanged):
                     raise EngineError("The interrupted run record has no usable restore information; fix it by hand")
                 self._require_writable()
                 if self.device.sync_state != "synchronized":
@@ -383,6 +391,8 @@ class Engine:
                         t.channel(c).mute = bool(original[c])
                     for c in dchanged:
                         t.channel(c).delay_ms = float(dorig[c])
+                    for c in ichanged:
+                        t.channel(c).invert = bool(iorig[c])
                 self.edit("owner", "restore mutes/delays after interrupted measurement run", fn)
             elif action != "discard":
                 raise EngineError("Choose restore or discard")

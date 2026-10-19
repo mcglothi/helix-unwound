@@ -145,6 +145,7 @@ export interface MeasureRunState {
   kind?: 'measure' | 'align'
   delay_changed?: string[]
   align?: { reference: string; adjust: string; carry: string[]; fc: number; offsets: number[]
-            results: { offset_ms: number; band_db: number }[]; best_offset_ms?: number; gain_db?: number
+            results: { offset_ms: number; band_db: number; inverted?: boolean }[]; best_offset_ms?: number; gain_db?: number
+            best_inverted?: boolean; repeatability_db?: number
             outcome?: string; proposal_id?: string } | null
 }

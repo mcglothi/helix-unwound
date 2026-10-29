@@ -1,7 +1,7 @@
 # helixTune handoff
 
-Last Updated: 2026-10-18
-Status: ⚠️ Live hardware test done 2026-10-18 (session-based stored backup, first supervised write; see HARDWARE-EVIDENCE); session/backup fixes and Director-volume guard await Codex review; physical engine sessions still disabled
+Last Updated: 2026-10-29
+Status: ✅ Through 2026-10-19 everything is Codex-approved, pushed and CI-green (`5896713`, run 39268262620): physical write sessions (used live 2026-10-18), power-loss-safe state, Measure this seat, time alignment by crossover summing. ⚠️ Next: first truck run of both workflows with the UMIK-1 and phone pink noise (see `docs/TRUCK-MEASUREMENT-CHECKLIST.md`).
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
 
@@ -175,7 +175,7 @@ Validation:
 
 ## Milestone 7: evidence-aware acoustic estimates
 
-✅ COMPLETE (Codex; independent review pending)
+✅ COMPLETE (Codex). **Independent Claude review 2026-10-18: approved** with suggestions: one-step "captured just now" import (done, `c17786f`/`2ecb2c0`), consistent seat names (done), avoid narrow auto-EQ boosts (open).
 
 - Main/Drive graphs, proposal previews and solver level anchors now select the same current hardware/known-tune captures, preferring isolated then newest records and refusing overlaps. Unknown/stale records remain available as historical measured data but cannot project onto current drivers or shift the display target.
 - Responses include contributor IDs/fingerprints/bandwidths, exclusions with reasons, coverage and missing active outputs, aggregation method and explicit magnitude-model limitations. No eligible data produces null estimates/target. Partial coverage stays visible instead of double-counting an overlapping combined capture.
@@ -309,12 +309,41 @@ Validation: **287 Python tests passed** locally; **262 passed / 25 skipped** fro
 Validation at `78c5987`: 398 Python (private capture comparisons ran locally), frontend 43,
 Svelte/TS 0 errors, production build. Each fix was falsified by reverting it.
 
-Before any physical session is enabled: (1) `Client.drain`'s deadline cannot interrupt a single
+Before any physical session is enabled (all three done 2026-10-18, see Next tasks 1): (1) `Client.drain`'s deadline cannot interrupt a single
 blocking `transport.read`, so bound the serial read timeout too; (2) after a heartbeat failure,
 require reconnect to restart monitoring (the UI message already says so; enforce it); (3) handle
 partial-open/close failures on hardware. Physical transports still reject every session byte.
 
+## Measurement workflows and durable state (2026-10-18/19, Claude; Codex-approved)
+
+✅ Each series was reviewed by Codex through direct `codex exec` calls, fixed until approved, then pushed with CI green.
+
+- `0fb6643` + `012c7a9` + `024f74a` — power-loss-safe state (`helixtune.durable`): see Milestone 5 for the
+  design. Codex findings fixed: restart bypass of a fault, schema-invalid backup overwrite, shape errors,
+  swallowed backup failures, non-UTF-8 primary. Faults persist in `state_faults.json` across restarts.
+- `1515015` + `2d92b31` + `5d651b0` — **Measure this seat** (`helixtune.measure_run`, owner-only): per-output
+  isolation by validated edits, pink noise + REW RTA averaging (no REW Pro), durable `measure_run.json`,
+  restore only the run's own changes. Phone noise ("I'll play pink noise myself") is the default source.
+  Codex found 8 issues (foreign-change restore, cleanup admission, design lock, recovery-intent ordering,
+  stop polling, noise before isolation, timed-out Play, final-persistence admission); all fixed.
+- `92bb761` + `98c0bda` + `5896713` — **time alignment by crossover summing** (`AlignRun`): noise floor,
+  delay sweep in both polarities around one period of fc, winner and start re-measured, signal and
+  repeatability guards, proposal bound to capture-time inputs and created atomically with the post-restore
+  revision check. The result is a proposal for owner review; the run never applies it.
+- Details and limits: `docs/REW.md`. Live so far: silent runs against REW 5.40 beta 135 with the
+  emulator only. Neither workflow has run on the truck with sound.
+- `scripts/make_pink_noise.py` (2026-10-29) regenerates the test signal Tim plays from his phone
+  (20 Hz-20 kHz, -20 dBFS RMS, 2 min, mono 48 kHz/16-bit, seamless loop, seed 7) and prints its
+  checks. The WAV itself is kept out of Git (`artifacts/test-signals/`, copy in `~/Downloads`).
+
+Validation at `5896713` (re-run 2026-10-29): 500 Python passed, 44 frontend passed.
+
 ## Next tasks
+
+0. **First truck run (needs Tim, in the truck):** Measure this seat for the front drivers at the driver
+   seat, then time alignment for the crossover pairs, with the UMIK-1 (90° cal) and phone pink noise via
+   AAWireless. Follow `docs/TRUCK-MEASUREMENT-CHECKLIST.md`; read Digital Volume before and after. Both
+   runs write mutes/delays to the DSP, so they happen only with Tim present and his go-ahead.
 
 1. **After the 2026-10-18 live test:** stored backup now opens PC-Tool's session and sends
    `32 01 06 00` (the only way the DSP answered `32 03`); `Session` pauses 0.1 s after each sync;
@@ -340,15 +369,13 @@ partial-open/close failures on hardware. Physical transports still reject every 
    bound to routing/role, cleared on connect/disconnect); only a level raised while muted or unknown offers the
    reviewed, atomic "Unmute at 0 dB" (POST /api/channels/{cid}/unmute-at-zero). Inspector fields are labelled. Start/end every truck test by reading the
    Director's Digital Volume.
-2. **Review milestone 5:** Claude should independently inspect provenance retention, source bindings, per-constraint clearing/reappearance, version 1 migration, and the owner UI. Do not edit concurrently; claim this checkout first. Current-source clearing deliberately requires correcting/removing its metadata, preserving the earlier rule that live role/spec constraints still apply.
-3. **Review milestone 6:** independently inspect session lifecycle and UI reauthentication. Phone pairing should mint these sessions; device/session management and multiworker hosting are still future work.
-4. **Review milestone 7:** independently verify evidence selection, master gain, combined-capture attribution, proposal eligibility binding and explanatory UI. Portable CI is now implemented (milestone 8); settle a license before inviting community code contributions.
+2. ✅ Milestones 5, 6 and 7 independently reviewed by Claude (2026-10-18, approved; see their sections). Still open from those reviews: durable paired-device sessions with phone pairing, a Host allow-list before LAN/phone access, avoiding narrow auto-EQ boosts. Settle a license before inviting community code contributions.
 5. Hardware protocol: framing, write command, EQ/crossover/delay/gain/mute/invert addresses and maths, quantization, link groups and the session sequence are confirmed by the 2026-10-17 captures. 6/18 dB first-order slopes and BW12 (Q 0.71) are bit-exact as of capture 23. Routing now targets MAINMATRIX like PC-Tool (captures 24a/b). Still open before enabling them: Bessel and LR36 constants, master gain semantics, Save&Store/flash. Director controls never cross USB.
 6. Continue rendered desktop/phone acceptance of sign-in, sign-out, and physical-output configuration using the demo; short-lived phone pairing and per-device sessions remain future work. Persistent protection tightening is deliberately conservative; don't reintroduce metadata-based relaxation.
 
 Work while hardware captures are pending: next measurement capture planning/verification
 guidance, then broader physical-phone/keyboard/accessibility acceptance. Continue community UI/UX research and test live REW
-compatibility: live acceptance done 2026-10-18 against REW 5.40 beta 135 / API 0.9.8 (see REW.md). Automated 'Measure this seat' (pink noise + RTA per output) built 2026-10-19 and accepted silently against live REW with the emulator; first truck run with the UMIK-1 (90° cal set in REW) is next. Argon's longer-term
+compatibility: live acceptance done 2026-10-18 against REW 5.40 beta 135 / API 0.9.8 (see REW.md). Automated 'Measure this seat' and crossover-summing time alignment built 2026-10-19 and accepted silently against live REW with the emulator; first truck run with the UMIK-1 (90° cal set in REW) is next task 0. Argon's longer-term
 adaptive/embedded roadmap was reviewed; no USB/HID rewrite, native sweep engine,
 CAN adaptation or autonomous hardware writes were adopted from it.
 
@@ -364,7 +391,7 @@ These are review recommendations, not approval for every proposed product featur
 
 ## Known limits at handoff
 
-- USB captures verify framing, commands and selected filter cases; the session and one supervised gain write were validated live (2026-10-18) with one-off scripts. Engine physical writes exist only behind `serve --allow-physical-writes`, limited to capture-verified settings with the provisional master excluded, and have not yet been used on hardware. See HARDWARE-EVIDENCE.md.
+- USB captures verify framing, commands and selected filter cases; the session and one supervised gain write were validated live (2026-10-18) with one-off scripts. Engine physical writes exist only behind `serve --allow-physical-writes`, limited to capture-verified settings with the provisional master excluded; first used on hardware 2026-10-18 (full overwrite plus EQ/mute/gain edits, all acknowledged). See HARDWARE-EVIDENCE.md.
 - “Synchronized” only means all write requests returned responses accepted by the current client. Parameter echo ACK content is now checked; atomicity, safeload and independent readback remain unverified; this is not a hardware-verified tune.
 - No automatic device mute or rollback is attempted after transport failure. Uncertainty can include partially applied filters. User must review and deliberately resynchronize.
 - The network API now enforces owner/agent capabilities, but same-user local processes that can read owner files can assume owner authority. Direct engine/CLI operations are trusted local operations; this is not an OS sandbox.

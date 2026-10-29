@@ -1,0 +1,132 @@
+"""PC-Tool session handling, replayed from the 2026-10-17 USB captures.
+
+Open (capture 01b-connect-click):
+  1. baud recovery at 19200: 0A 03, sync, host -> high; 0A 2F, sync, host -> 19200
+     (returns a DSP left at high speed by an earlier session to 19200)
+  2. identify (must be a PRO MK2)
+  3. 09 01 (session start, no reply)
+  4. 0A 03, sync, wait ~0.5 s, host -> high, sync
+Idle: keep-alive 02 00 22 b8 00 00 00 00, echoed unchanged.
+Close (capture 17-disconnect): 09 00, 0A 2F, sync, wait ~0.5 s, host -> 19200.
+
+Baud-change acknowledgements arrive truncated while the line rate changes; they are
+drained, not validated. Validated live on 2026-10-18 (open, keep-alive, close; a supervised
+gain write). Physical transports stay gated by Client: only a stored-preset backup may open a
+session on real hardware, and parameter writes remain disabled there.
+"""
+from __future__ import annotations
+
+import time
+from typing import Callable
+
+from . import commands, frame
+from .client import Client
+
+KEEPALIVE = commands.KEEPALIVE
+SESSION_START = commands.SESSION_START
+SESSION_END = commands.SESSION_END
+BAUD_HIGH = commands.set_baud(commands.BaudCode.HIGH)
+BAUD_LOW = commands.set_baud(commands.BaudCode.LOW)
+SETTLE_S = 0.5       # PC-Tool waits ~500 ms between the sync burst and the host baud switch
+ACK_WAIT_S = 0.05
+# 2026-10-18 live test (macOS, FT232R): a command sent straight after a sync burst at the new
+# rate went unanswered; with this pause the session opened every time.
+POST_SYNC_S = 0.1
+
+
+class SessionError(RuntimeError):
+    pass
+
+
+class Session:
+    def __init__(self, client: Client, set_host_baud: Callable[[int], None], *,
+                 high_baud: int = commands.HIGH_HOST_BAUD, sleep: Callable[[float], None] = time.sleep):
+        self.client = client
+        self.set_host_baud = set_host_baud
+        self.high_baud = high_baud
+        self.sleep = sleep
+        self.open_ = False
+        self.info: commands.DeviceInfo | None = None
+
+    # -- low-level steps -----------------------------------------------------------------
+    def _sync(self) -> None:
+        self.client.send_sync()
+        self.sleep(POST_SYNC_S)
+
+    def _switch(self, code_payload: bytes, host_baud: int) -> None:
+        self.client.send(code_payload)
+        self.sleep(ACK_WAIT_S)
+        self.client.drain()                 # truncated ack at the rate change
+        self._sync()
+        self.sleep(SETTLE_S)
+        self.set_host_baud(host_baud)
+
+    # -- public --------------------------------------------------------------------------
+    def open(self) -> commands.DeviceInfo:
+        if self.open_:
+            raise SessionError("session already open")
+        self.set_host_baud(commands.LOW_HOST_BAUD)
+        self._switch(BAUD_HIGH, self.high_baud)      # recovery dance
+        self._switch(BAUD_LOW, commands.LOW_HOST_BAUD)
+        info = self.client.identify()
+        if info.model_type != commands.PRO_MK2:
+            # Nothing more is sent to a device we do not recognise.
+            raise SessionError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
+        self.client.send(SESSION_START)
+        try:
+            self.sleep(ACK_WAIT_S)
+            self.client.drain()
+            self._switch(BAUD_HIGH, self.high_baud)
+            self._sync()
+            self.keepalive()                          # proves the high-speed link answers
+        except Exception:
+            # Partial open: the session was started and the DSP may be at high speed. End it and
+            # return both sides to 19200 before reporting; a DSP the close cannot reach is left
+            # for the next open's baud-recovery sequence.
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
+        self.open_, self.info = True, info
+        return info
+
+    def keepalive(self) -> int:
+        """The DSP echoes the first 7 bytes; the last byte is a live value. It was always 00 with
+        the audio muted (2026-10-17) and ranged 00-10 with music playing (2026-10-18, ~1 in 6
+        replies to PC-Tool, which ignores it). Returns that byte; meaning not decoded."""
+        reply = self.client.transact(KEEPALIVE)
+        if len(reply.payload) != len(KEEPALIVE) or reply.payload[:-1] != KEEPALIVE[:-1]:
+            raise SessionError(f"keep-alive not echoed (got {reply.payload.hex(' ')})")
+        return reply.payload[-1]
+
+    def close(self) -> None:
+        """Always tries to leave the DSP and host at 19200, even after errors."""
+        try:
+            self.client.send(SESSION_END)
+            self.sleep(ACK_WAIT_S)
+            self.client.drain()
+            self._switch(BAUD_LOW, commands.LOW_HOST_BAUD)
+        finally:
+            self.open_ = False
+
+    def __enter__(self) -> "Session":
+        self.open()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def wire_commands(raw_tx: bytes) -> list[bytes]:
+    """Split a host->device byte stream into frames and sync bursts (for tests/diffs)."""
+    out, i = [], 0
+    while i < len(raw_tx):
+        if raw_tx[i:i + len(frame.SYNC_FRAME)] == frame.SYNC_FRAME:
+            out.append(b"SYNC")
+            i += len(frame.SYNC_FRAME)
+            continue
+        f, n = frame.decode_tx(raw_tx[i:])
+        out.append(f.payload)
+        i += n
+    return out

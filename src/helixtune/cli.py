@@ -7,6 +7,7 @@ import sys
 
 from .protocol import commands
 from .protocol.client import Client
+from .protocol.session import SessionError
 
 FTDI_VID = 0x0403
 ATF_VID = 0x2E4F
@@ -60,6 +61,41 @@ def cmd_probe(args) -> int:
     return 0
 
 
+def cmd_backup_stored(args) -> int:
+    """Explicit port and output required; no auto-discovery. Opens PC-Tool's session and
+    stored-memory selection only for the read (validated live 2026-10-18); never writes."""
+    import serial
+    from pathlib import Path
+    from . import stored_preset
+    target = Path(args.output).expanduser()
+    if not target.parent.is_dir():
+        print("Backup parent directory does not exist; no port opened", file=sys.stderr)
+        return 2
+    if target.exists():
+        print("Backup destination already exists; choose a new file (nothing overwritten)", file=sys.stderr)
+        return 2
+    try:
+        with serial.Serial(args.port, commands.LOW_HOST_BAUD, bytesize=8, parity="N", stopbits=1,
+                           rtscts=False, xonxoff=False, timeout=0.05) as transport:
+            client = Client(transport, timeout=1)
+            preset = stored_preset.backup(client, lambda baud: setattr(transport, "baudrate", baud))
+        stored_preset.save(target, preset)
+    except TimeoutError:
+        print("Read timed out. Nothing was written. Session cleanup was attempted; if the DSP stays silent, "
+              "the next connection's baud recovery or a power cycle returns it to 19200.", file=sys.stderr)
+        return 1
+    except SessionError as exc:
+        print(f"Stored-preset backup failed: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:
+        print(f"Stored-preset backup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Stored preset backed up to {target} ({len(preset.blob)} bytes, SHA256 {preset.sha256}).")
+    print(f"XML SHA256 {preset.xml_sha256}")
+    print("This backs up stored XML, not unsaved current RAM. Nothing was loaded or written.")
+    return 0
+
+
 def find_param_map(explicit: str | None):
     import os
     from pathlib import Path
@@ -84,10 +120,32 @@ def cmd_serve(args) -> int:
     from .engine import Engine
 
     eng = Engine.from_param_map(load_at01(find_param_map(args.at01)), Path(args.data).expanduser())
+    eng.keepalive_s = 0.8          # PC-Tool pings every ~0.85 s while a session is open
+    eng.physical_writes_allowed = bool(getattr(args, "allow_physical_writes", False))
+    if eng.physical_writes_allowed:
+        print("PHYSICAL WRITES ENABLED. Supervised use only: lower or mute the audio, read the Director's "
+              "Digital Volume before and after, and keep PC-Tool closed.")
     print("Owner UI: run 'helixtune open' in another terminal (use matching --data/--port).")
     if args.host not in ("127.0.0.1", "localhost"):
         print("Remote access requires credentials. Use a trusted network or an encrypted tunnel for HTTP.")
     uvicorn.run(create_app(eng), host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
+def cmd_demo(args) -> int:
+    from pathlib import Path
+    import uvicorn
+    from .api import create_app
+    from .demo import create_demo_engine
+    from .engine import EngineError
+    try:
+        engine = create_demo_engine(Path(args.data))
+    except (EngineError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    print("DEMO: invented hardware and measurements; physical device connections are disabled.")
+    import shlex
+    print(f"Owner UI: helixtune open --data {shlex.quote(str(engine.data_dir))} --port {args.port}")
+    uvicorn.run(create_app(engine), host=args.host, port=args.port, log_level="warning")
     return 0
 
 
@@ -123,12 +181,23 @@ def main(argv=None) -> int:
     p.add_argument("--port")
     p.add_argument("--timeout", type=float, default=1.0)
     p.set_defaults(fn=cmd_probe)
+    backup = sub.add_parser("backup-stored", help="explicit read-only stored-preset backup at 19200 baud")
+    backup.add_argument("--port", required=True)
+    backup.add_argument("--output", required=True, help="new .afpx file; never overwritten")
+    backup.set_defaults(fn=cmd_backup_stored)
     s = sub.add_parser("serve", help="run the engine, HTTP API and web UI")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--data", default="~/.helixtune")
     s.add_argument("--at01")
+    s.add_argument("--allow-physical-writes", action="store_true",
+                   help="permit supervised write sessions on a real DSP (off by default)")
     s.set_defaults(fn=cmd_serve)
+    d = sub.add_parser("demo", help="hardware-free workstation with synthetic example data")
+    d.add_argument("--host", default="127.0.0.1")
+    d.add_argument("--port", type=int, default=8770)
+    d.add_argument("--data", default="~/.helixtune-demo")
+    d.set_defaults(fn=cmd_demo)
     o = sub.add_parser("open", help="open the local owner UI without printing credentials")
     o.add_argument("--data", default="~/.helixtune")
     o.add_argument("--port", type=int, default=8765)

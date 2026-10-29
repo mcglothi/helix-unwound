@@ -43,7 +43,8 @@ class Library:
         return [MediaItem.model_validate(x) for x in json.loads(self.index_file.read_text())]
 
     def _save(self, items: list[MediaItem]) -> None:
-        self.index_file.write_text(json.dumps([i.model_dump() for i in items], indent=2))
+        from .durable import atomic_write
+        atomic_write(self.index_file, json.dumps([i.model_dump() for i in items], indent=2))
 
     def list(self) -> list[dict]:
         return [i.model_dump() | {"url": i.url} for i in sorted(self._load(), key=lambda i: -i.created)]

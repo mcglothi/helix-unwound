@@ -58,8 +58,12 @@ class OutputProtections(BaseModel):
 
 
 def tighten_outputs(tune: Tune, policy: SafetyPolicy, existing: OutputProtections | None = None,
-                    driver_limits: dict | None = None) -> OutputProtections:
-    """Learn stricter floors without ever relaxing previously recorded limits."""
+                    driver_limits: dict | None = None, *, advisory: bool = False) -> OutputProtections:
+    """Learn stricter floors without ever relaxing previously recorded limits.
+
+    The Fs-multiple margin is enforced for every driver without a manufacturer minimum
+    high-pass (DriverLimits.fs_unbounded); for a driver that publishes one, that figure is the
+    enforced (red) floor and its Fs margin is advisory (yellow), included when advisory=True."""
     result = (existing or OutputProtections()).model_copy(deep=True)
     for ch in tune.channels:
         guard = result.outputs[ch.id]
@@ -68,7 +72,9 @@ def tighten_outputs(tune: Tune, policy: SafetyPolicy, existing: OutputProtection
         factor = max(guard.fs_factor, (rp.fs_factor or 0) if rp else 0)
         lim = (driver_limits or {}).get(ch.id)
         if lim:
-            candidates = [v for v in (need, lim.hp_min, factor * lim.fs if lim.fs and factor else None) if v]
+            fs_basis = lim.fs if advisory else lim.fs_unbounded
+            fs_margin = factor * fs_basis if fs_basis and factor else None
+            candidates = [v for v in (need, lim.hp_min, fs_margin) if v]
             need = max(candidates) if candidates else None
             if lim.lp_max:
                 guard.max_lp_hz = min(guard.max_lp_hz, lim.lp_max) if guard.max_lp_hz else lim.lp_max
@@ -83,8 +89,10 @@ def tighten_outputs(tune: Tune, policy: SafetyPolicy, existing: OutputProtection
 
 
 def check(tune: Tune, policy: SafetyPolicy, previous: Tune | None = None, driver_limits: dict | None = None,
-          protections: OutputProtections | None = None) -> list[str]:
-    """driver_limits: channel -> equipment.DriverLimits from recorded driver specs."""
+          protections: OutputProtections | None = None, unmute_levels: dict[str, float] | None = None) -> list[str]:
+    """driver_limits: channel -> equipment.DriverLimits from recorded driver specs.
+    unmute_levels: output -> the level it was playing at when muted (same connection and
+    routing); unmuting at or below it is a return to a known state, not a jump."""
     problems: list[str] = []
     effective = tighten_outputs(tune, policy, protections, driver_limits)
     if tune.master_gain_db > policy.max_master_gain_db:
@@ -108,11 +116,29 @@ def check(tune: Tune, policy: SafetyPolicy, previous: Tune | None = None, driver
             have = f"{ch.lp.freq_hz:g} Hz" if ch.lp else "none"
             problems.append(f"{ch.id}: low-pass {have} is above the physical output maximum {guard.max_lp_hz:g} Hz")
     if previous is not None:
-        problems += _step_limits(tune, previous, policy)
+        problems += _step_limits(tune, previous, policy, unmute_levels or {})
     return problems
 
 
-def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy) -> list[str]:
+def advisories(tune: Tune, policy: SafetyPolicy, driver_limits: dict | None = None,
+               protections: OutputProtections | None = None,
+               advisory_protections: OutputProtections | None = None) -> list[str]:
+    """Yellow tier: allowed settings below a recommended (not enforced) high-pass margin.
+    Red-tier problems come from check(); a channel that fails those is not repeated here."""
+    hard = tighten_outputs(tune, policy, protections, driver_limits)
+    soft = tighten_outputs(tune, policy, advisory_protections or protections, driver_limits, advisory=True)
+    out = []
+    for ch in tune.channels:
+        floor, margin = hard.outputs[ch.id].min_hp_hz or 0, soft.outputs[ch.id].min_hp_hz or 0
+        if ch.mute or ch.hp is None or margin <= floor:
+            continue
+        if floor <= ch.hp.freq_hz < margin:
+            out.append(f"{ch.id}: high-pass {ch.hp.freq_hz:g} Hz is below the recommended {margin:g} Hz margin "
+                       f"(Fs multiple); allowed down to the manufacturer minimum {floor:g} Hz")
+    return out
+
+
+def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy, unmute_levels: dict[str, float]) -> list[str]:
     out = []
     lim = policy.max_boost_step_db
     if new.master_gain_db - old.master_gain_db > lim:
@@ -122,7 +148,13 @@ def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy) -> list[str]:
         if n.gain_db - o.gain_db > lim:
             out.append(f"{n.id}: gain raised by {n.gain_db - o.gain_db:.1f} dB in one step (max {lim})")
         if o.mute and not n.mute and n.gain_db > 0:
-            out.append(f"{n.id}: unmuting with positive gain; set gain <= 0 dB first")
+            before = unmute_levels.get(n.id)
+            if before is None:
+                out.append(f"{n.id}: unmuting with positive gain and no remembered level from before the mute; "
+                           "unmute at 0 dB first")
+            elif n.gain_db > before:
+                out.append(f"{n.id}: unmuting at {n.gain_db:+g} dB, above the {before:+g} dB it played at when "
+                           "muted; unmute at 0 dB first")
         for i, (nb, ob) in enumerate(zip(n.eq, o.eq)):
             nboost = nb.gain_db if nb.enabled else 0.0
             oboost = ob.gain_db if ob.enabled else 0.0

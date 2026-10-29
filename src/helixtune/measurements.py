@@ -4,6 +4,7 @@ Each measurement keeps the tune that was active when it was taken. Because we
 compute every filter ourselves, the response under any other tune is predicted as
 
     predicted_dB(f) = measured_dB(f) + |H_new(f)|dB - |H_then(f)|dB
+                      + master_now_dB - master_then_dB
 
 for the channels that were playing. RTA (magnitude-only) data supports magnitude
 prediction; summing between drivers needs phase (sweep data) and is approximated
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, field_validator, Field
 
 from .mapping import channel_response
 from .model import Role, Tune
@@ -47,12 +48,26 @@ class DriverProvenanceEvent(BaseModel):
     capture_fingerprint: str
 
 
+def normalise_seat(seat: str) -> str:
+    return " ".join(str(seat).split()).lower()
+
+
 class Measurement(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10])
     name: str
     kind: str = "rta"                       # rta | sweep
     channels: list[str] = Field(default_factory=list)   # channel ids that were playing
-    seat: str = "driver"                    # driver | passenger | center | average
+    seat: str = "driver"                    # driver | passenger | center | average (normalised)
+
+    @field_validator("seat")
+    @classmethod
+    def _normalise_seat(cls, v: str) -> str:
+        # "Driver" and "driver" are the same position; an unmatched spelling would silently
+        # never be selected for estimates or solvers.
+        v = normalise_seat(v)
+        if not v:
+            raise ValueError("seat must not be empty")
+        return v
     taken_at: float = Field(default_factory=time.time)
     source: str = ""
     notes: str = ""
@@ -63,6 +78,7 @@ class Measurement(BaseModel):
     # physical drivers that were on each measured channel: channel -> [{id, make, model}].
     # None = unknown provenance (e.g. imported legacy files); never inferred from import time.
     drivers: dict[str, list[dict[str, str]]] | None = None
+    import_provenance: dict = Field(default_factory=dict)
     drivers_source: str = ""                # how `drivers` was established, e.g. "owner attested …"
     driver_history: list[DriverProvenanceEvent] = Field(default_factory=list)
 
@@ -97,15 +113,8 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def save(self, m: Measurement) -> Measurement:
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", dir=self.root, prefix=".measurement-", suffix=".tmp", delete=False) as fh:
-                temporary = Path(fh.name)
-                fh.write(m.model_dump_json())
-            os.replace(temporary, self.root / f"{m.id}.json")
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        from .durable import atomic_write
+        atomic_write(self.root / f"{m.id}.json", m.model_dump_json())
         return m
 
     def get(self, mid: str) -> Measurement:
@@ -131,19 +140,48 @@ def _chain_db(tune: Tune, cids: list[str], grid: np.ndarray) -> dict[str, np.nda
     return {c: channel_response(tune.channel(c), tune.sample_rate, grid) for c in cids}
 
 
-def predict(m: Measurement, now: Tune, grid: np.ndarray = GRID) -> np.ndarray:
+def prediction_issues(m: Measurement, now: Tune) -> list[str]:
+    """Reasons a capture cannot support this magnitude-only projection."""
+    if m.tune is None:
+        return ["capture-time tune is unknown"]
+    if not m.channels or len(set(m.channels)) != len(m.channels):
+        return ["measured outputs are missing or duplicated"]
+    if (len(m.freqs) < 2 or len(m.freqs) != len(m.spl)
+            or not np.isfinite(m.freqs).all() or not np.isfinite(m.spl).all()
+            or min(m.freqs) <= 0 or np.any(np.diff(m.freqs) <= 0)
+            or max(abs(v) for v in m.spl) > 300):
+        return ["measurement frequencies/levels are invalid"]
+    issues = []
+    for cid in m.channels:
+        try:
+            then, new = m.tune.channel(cid), now.channel(cid)
+        except KeyError:
+            return ["measurement references an unknown output"]
+        if then.mute:
+            issues.append(f"{cid}: captured output was muted; its acoustic response cannot be recovered")
+        if then.mix != new.mix:
+            issues.append(f"{cid}: input routing changed since capture")
+        if len(m.channels) > 1 and (then.delay_ms != new.delay_ms or then.invert != new.invert):
+            issues.append(f"{cid}: delay/polarity changed in a combined capture; individual acoustic phase is unknown")
+    return issues
+
+
+def predict(m: Measurement, now: Tune, grid: np.ndarray = GRID, *, include_master: bool = True) -> np.ndarray:
+    """include_master=False when master gain is not applied to the hardware (a real DSP: the
+    engine never writes the provisional master), so its change is not shown as an acoustic one."""
     measured = np.interp(np.log(grid), np.log(m.freqs), m.spl)
     if m.tune is None or not m.channels:
         return measured
     then = _chain_db(m.tune, m.channels, grid)
     new = _chain_db(now, m.channels, grid)
+    master = now.master_gain_db - m.tune.master_gain_db if include_master else 0.0
     if len(m.channels) == 1:
         c = m.channels[0]
-        return measured + np.clip(new[c], -80, 40) - np.clip(then[c], -80, 40)
+        return measured + np.clip(new[c], -80, 40) - np.clip(then[c], -80, 40) + master
     # several channels in one measurement: scale by the change in their power sum
     p_then = sum(10 ** (np.clip(v, -80, 40) / 10) for v in then.values())
     p_new = sum(10 ** (np.clip(v, -80, 40) / 10) for v in new.values())
-    return measured + 10 * np.log10(p_new / p_then)
+    return measured + 10 * np.log10(p_new / p_then) + master
 
 
 # ---- legacy REW .mdat import --------------------------------------------------------

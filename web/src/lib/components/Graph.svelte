@@ -149,7 +149,7 @@
     {#if sys && hasMeas}
       {#if app.layers.groups}
         {#each Object.entries(sys.groups) as [role, vals]}
-          <path d={path(sys.freqs, vals)} class="curve" style="stroke:{ROLE_COLORS[role as keyof typeof ROLE_COLORS]}; opacity:.5; stroke-width:1.5" />
+          <path d={path(sys.freqs, vals)} class="curve" style="stroke:{ROLE_COLORS[role as keyof typeof ROLE_COLORS] ?? 'var(--muted)'}; opacity:.5; stroke-width:1.5" />
         {/each}
       {/if}
       {#if app.layers.measured}<path d={path(sys.freqs, sys.measured)} class="curve" style="stroke:var(--dim); stroke-width:2" />{/if}
@@ -178,7 +178,7 @@
     {/if}
   </svg>
   {#if !hasMeas}
-    <div class="empty">No measurements for this seat yet — showing EQ only. Import from REW or measure.</div>
+    <div class="empty">No eligible acoustic estimate for this seat — showing EQ only. Review captures in Measurements.</div>
   {/if}
   {#if readout && hasMeas}
     <div class="readout mono">

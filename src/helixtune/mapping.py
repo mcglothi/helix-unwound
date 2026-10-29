@@ -4,7 +4,7 @@ Everything marked PROVISIONAL is a reading of SigmaStudio naming conventions tha
 still needs confirming against a capture of the original PC-Tool:
   - EQ block <-> channel assignment (EQ1/EQ2 = channel A, EQ1_k/EQ2_k = channel k)
   - stored biquad sign convention (SigmaStudio stores -a1, -a2)
-  - crossover slot usage (7 biquad stages + 2 first-order sections, series cascade)
+  - remaining slope variants beyond captured HP/LP LR12/LR24; fixed HP0..2, LP3..5 layout now follows captures
   - delay in integer samples, mute/invert as integer flags
 """
 
@@ -18,10 +18,43 @@ from .dsp import filters as F
 from .dsp.fixed import word_824, word_int
 from .model import CHANNELS, EQ_BANDS, Channel, Tune
 
-NEGATE_A = True  # PROVISIONAL
+NEGATE_A = True  # captured coefficient storage negates A1/A2
 XO_BIQUAD_SLOTS = 7
 XO_FIRST_ORDER_SLOTS = 2
 STAGES_PER_EQ_BLOCK = 15
+MAIN_MATRIX_INPUTS = 12
+MIX_INPUTS = ("L", "R")   # main-matrix inputs 0/1 (Digital In L/R); other inputs render as 0
+
+
+# Director/remote (URC) volume parameters and their slew settings. The remote owns these;
+# HelixTune never writes them. 2026-10-18: Digital (optical) Volume was found at minimum with
+# no captured write explaining it, so the engine refuses any write that touches this set.
+PROTECTED_PATTERN = (r"^URC_FUNCTION_(MASTER|SUB|OPTO|AUX)VOLUME"
+                     r"|VOLUMEURC_SLEW_MODE$|^MASTERVOLUME(OPTOOUT)?_SLEW_MODE$")
+
+
+# Filter combinations whose rendered words matched PC-Tool's captured writes bit-exactly
+# (2026-10-17/18). Writes to a real DSP are limited to these; emulator/offline modelling keeps
+# every type. Known mismatches: Bessel and LR36 (capture 23). Everything else is uncaptured.
+PHYSICAL_VERIFIED_XO = {
+    "hp": {(F.XoType.LINKWITZ_RILEY, 12), (F.XoType.LINKWITZ_RILEY, 24),
+           (F.XoType.BUTTERWORTH, 6), (F.XoType.BUTTERWORTH, 12), (F.XoType.BUTTERWORTH, 18)},
+    "lp": {(F.XoType.LINKWITZ_RILEY, 12), (F.XoType.LINKWITZ_RILEY, 24)},
+}
+PHYSICAL_VERIFIED_EQ = {F.EqType.PEAK}
+
+
+def physical_problems(tune: Tune) -> list[str]:
+    """Settings that may not be written to a real DSP because PC-Tool's encoding is unverified."""
+    out: list[str] = []
+    for ch in tune.channels:
+        for label, xo in (("hp", ch.hp), ("lp", ch.lp)):
+            if xo is not None and (xo.type, xo.slope_db) not in PHYSICAL_VERIFIED_XO[label]:
+                out.append(f"{ch.id} {label.upper()} {xo.type.value} {xo.slope_db} dB/oct is not verified against PC-Tool")
+        for n, band in enumerate(ch.eq, 1):
+            if band.enabled and band.type not in PHYSICAL_VERIFIED_EQ:
+                out.append(f"{ch.id} EQ band {n} type {band.type.value} is not verified against PC-Tool")
+    return out
 
 
 class MappingError(ValueError):
@@ -74,14 +107,26 @@ def channel_addrs(pm: ParamMap, idx: int) -> ChannelAddrs:
         invert=_one(pm, rf"^DELAY__PHASE_SWITCH_INV{cid}_.*INVERT$"),
         gain=_one(pm, rf"^GAIN_GAIN{cid}_.*GAIN$"),
         mute=_one(pm, rf"^MUTE{cid}_.*MUTE$"),
-        # PROVISIONAL: optical-input matrix VOL{out:02d}{in:02d}; matches the .afpx 2-input route layout
-        mix={name: _one(pm, rf"^OPTO_MATRIX_OPTOMIXER_.*VOL{idx:02d}{n:02d}$") for n, name in enumerate(("L", "R"))},
+        # Captures 23/24 (2026-10-18): PC-Tool's routing edits on either IO tab write the main
+        # matrix row VOL{out:02d}{in:02d}, inputs 00/01 = Digital In L/R, and zero the other 10
+        # inputs of the row. The 2-input OPTO_MATRIX is never written live.
+        mix={(MIX_INPUTS[n] if n < len(MIX_INPUTS) else f"in{n}"): _one(pm, rf"^MAINMATRIX_.*VOL{idx:02d}{n:02d}$")
+             for n in range(MAIN_MATRIX_INPUTS)},
     )
 
 
 class DeviceMapping:
+    protected: frozenset[int] = frozenset()
+
+    @property
+    def provisional(self) -> frozenset[int]:
+        """Rendered for the emulator but never written to a real DSP: GAIN1's role as master
+        gain is a naming guess, not captured."""
+        return frozenset({self.master})
+
     def __init__(self, pm: ParamMap):
         self.pm = pm
+        self.protected = frozenset(pm.find(PROTECTED_PATTERN).values())
         self.channels = [channel_addrs(pm, i) for i in range(len(CHANNELS))]
         self.master = _one(pm, r"^GAIN1_.*GAIN$")  # PROVISIONAL: GAIN1 = master
 
@@ -91,17 +136,15 @@ class DeviceMapping:
     def crossover_sections(ch: Channel, fs: float) -> tuple[list[F.Biquad], list[F.FirstOrder]]:
         bqs: list[F.Biquad] = []
         fos: list[F.FirstOrder] = []
-        for xo, hp in ((ch.hp, True), (ch.lp, False)):
-            if xo is None:
-                continue
-            b, f = F.crossover_sections(xo.type, xo.slope_db, xo.freq_hz, fs, hp)
-            bqs += b
-            fos += f
-        if len(bqs) > XO_BIQUAD_SLOTS or len(fos) > XO_FIRST_ORDER_SLOTS:
-            raise MappingError(
-                f"channel {ch.id}: crossover needs {len(bqs)} biquads + {len(fos)} first-order "
-                f"sections; the DSP has {XO_BIQUAD_SLOTS} + {XO_FIRST_ORDER_SLOTS}. Reduce a slope.")
-        return bqs, fos
+        for label, xo, hp in (("HP", ch.hp, True), ("LP", ch.lp, False)):
+            b, f = (F.crossover_sections(xo.type, xo.slope_db, xo.freq_hz, fs, hp, pc_tool_q=True)
+                    if xo is not None else ([], []))
+            if len(b) > 3 or len(f) > 1:
+                raise MappingError(f"channel {ch.id}: {label} exceeds the captured fixed bank of 3 biquads + 1 first-order section; this slope layout is not supported")
+            bqs.extend(b + [F.Biquad.identity()] * (3 - len(b)))
+            fos.append(f[0] if f else F.FirstOrder.identity())
+        # Captures place HP in 0..2, LP in 3..5 and leave stage6 identity.
+        return bqs + [F.Biquad.identity()], fos
 
     @staticmethod
     def eq_sections(ch: Channel, fs: float) -> list[F.Biquad]:

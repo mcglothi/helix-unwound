@@ -14,7 +14,11 @@
 
 <article>
   <strong>{constraintLabel(item)}</strong>
-  <p>{item.state === 'pending' ? 'Pending owner review · enforced' : item.state === 'confirmed' ? 'Owner confirmed · enforced' : 'Cleared · retained in history'}</p>
+  {#if item.advisory && item.state !== 'cleared'}
+    <p class="advisory">Advisory margin · reported, not enforced: the manufacturer's own minimum on this output governs</p>
+  {:else}
+    <p>{item.state === 'pending' ? 'Pending owner review · enforced' : item.state === 'confirmed' ? 'Owner confirmed · enforced' : 'Cleared · retained in history'}</p>
+  {/if}
   <p class="muted">{item.current ? 'Source matches current metadata' : 'Source changed or removed · retained independently'}</p>
   <details>
     <summary>Exact source and review history</summary>
@@ -35,6 +39,7 @@
 </article>
 
 <style>
+  .advisory { color: var(--caution); }
   article { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
   p { margin: 6px 0; overflow-wrap: anywhere; }
   pre { font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }

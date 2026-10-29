@@ -17,6 +17,8 @@ class FaultDevice(EmulatedDevice):
     lose_reply = True
 
     def write(self, data):
+        if bytes(data) == frame.SYNC_FRAME:      # session baud-change burst, not a frame
+            return super().write(data)
         req, _ = frame.decode_tx(data)
         if req.payload[0] == commands.Cmd.WRITE_RAM:
             self.writes += 1

@@ -13,6 +13,7 @@
   --accent-text: #f2b84b;
   --ok: #8fd6a2;
   --warn: #ff8f7a;
+  --caution: #e8c46a;
   --c-sub: #b48cff;
   --c-midbass: #ff7a59;
   --c-mid: #5cc98f;
@@ -62,27 +63,29 @@ input[type='number'] { width: 100%; font-family: var(--mono); }
 .studio {
   display: grid; gap: var(--gap); padding: var(--gap);
   grid-template-columns: minmax(0, 1fr) 360px;
-  grid-template-rows: minmax(360px, 1fr) auto;
-  grid-template-areas: 'graph inspector' 'strips strips';
+  grid-template-rows: auto minmax(360px, 1fr) auto;
+  grid-template-areas: 'selector selector' 'graph inspector' 'strips strips';
   min-height: calc(100dvh - 64px);
 }
+.output-selector { grid-area: selector; }
 .area-graph { grid-area: graph; min-width: 0; }
-.area-inspector { grid-area: inspector; min-width: 0; }
+.area-inspector { grid-area: inspector; min-width: 0; scroll-margin-top: 160px; }
 .area-strips { grid-area: strips; min-width: 0; }
 
 @media (max-width: 1100px) {
   .studio {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-rows: minmax(320px, 46dvh) auto auto;
-    grid-template-areas: 'graph graph' 'strips strips' 'inspector inspector';
+    grid-template-rows: auto minmax(320px, 46dvh) auto auto;
+    grid-template-areas: 'selector selector' 'graph graph' 'strips strips' 'inspector inspector';
   }
 }
 @media (max-width: 700px) {
   :root { --gap: 10px; }
+  .area-inspector { scroll-margin-top: 10px; }
   .studio {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto;
-    grid-template-areas: 'graph' 'strips' 'inspector';
+    grid-template-areas: 'selector' 'graph' 'strips' 'inspector';
   }
 }
 
@@ -91,8 +94,8 @@ input[type='number'] { width: 100%; font-family: var(--mono); }
   .studio {
     grid-template-columns: env(viewport-segment-width 0 0) env(viewport-segment-width 1 0);
     column-gap: calc(env(viewport-segment-left 1 0) - env(viewport-segment-right 0 0));
-    grid-template-rows: 1fr auto;
-    grid-template-areas: 'graph inspector' 'strips inspector';
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: 'selector inspector' 'graph inspector' 'strips inspector';
     padding-inline: 0;
   }
 }
@@ -105,5 +108,5 @@ input[type='number'] { width: 100%; font-family: var(--mono); }
     row-gap: calc(env(viewport-segment-top 0 1) - env(viewport-segment-bottom 0 0));
     grid-template-areas: 'graph';
   }
-  .area-strips, .area-inspector { grid-area: auto; }
+  .output-selector, .area-strips, .area-inspector { grid-area: auto; }
 }

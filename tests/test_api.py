@@ -17,7 +17,7 @@ def c(tmp_path):
 
 
 def test_ui_and_tune_served(c):
-    assert "HelixTune" in c.get("/").text and "HelixTune" in c.get("/legacy").text
+    assert "Helix Unwound" in c.get("/").text and "Helix Unwound" in c.get("/legacy").text
     assert len(c.get("/api/tune").json()["channels"]) == 10
 
 

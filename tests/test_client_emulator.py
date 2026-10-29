@@ -23,9 +23,10 @@ def test_writes_refused_by_default():
     assert dev.log == []  # nothing reached the device
 
 
-def test_write_then_read_back_when_enabled():
+def test_write_and_inspect_emulator_memory_when_enabled():
     dev = EmulatedDevice()
     c = Client(dev, allow_writes=True)
     ack = c.write_ram(0x1824, b"\x01\x02\x03\x04")
     assert len(ack.payload) == 5
-    assert c.read_ram(0x1824, 4) == b"\x01\x02\x03\x04"
+    assert ack.payload == bytes.fromhex("03 00 01 18 24")
+    assert dev.ram[0x1824 * 4:0x1824 * 4 + 4] == b"\x01\x02\x03\x04"

@@ -178,5 +178,8 @@ def test_corrupt_constraint_identity_fails_closed(setup, synthetic_mapping):
     raw = json.loads(path.read_text())
     raw['constraints'][spec_item(engine).id]['value'] = 1500
     path.write_text(json.dumps(raw))
-    with pytest.raises(ValueError, match='fingerprint'):
+    backup = path.with_name('protections.json.bak')
+    backup.unlink(missing_ok=True)                      # no backup: refuse to start, never default
+    with pytest.raises(EngineError, match='no usable backup'):
         Engine(mapping=synthetic_mapping, data_dir=engine.data_dir)
+    assert json.loads(path.read_text())['constraints'][spec_item(engine).id]['value'] == 1500   # evidence untouched

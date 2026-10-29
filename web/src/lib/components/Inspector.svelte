@@ -6,6 +6,8 @@
   import OutputProtection from './OutputProtection.svelte'
 
   const ch = $derived(app.channel)
+  const partners = $derived(ch && ch.link_group
+    ? (app.tune?.channels ?? []).filter((o) => o.link_group === ch.link_group && o.id !== ch.id).map((o) => o.id) : [])
   const ROLES: Role[] = ['tweeter', 'midrange', 'midbass', 'woofer', 'subwoofer', 'fullrange', 'unused']
   const EQT: EqType[] = ['peak', 'low_shelf', 'high_shelf', 'notch', 'allpass']
   const XOT: { v: XoType; l: string }[] = [
@@ -27,6 +29,7 @@
 </script>
 
 {#if ch}
+  {#key app.revertTick}
   <section class="panel inspector">
     <header>
       <span class="swatch" style="background:{ROLE_COLORS[ch.role]}"></span>
@@ -34,6 +37,14 @@
              onchange={(e) => app.patchChannel(ch.id, { name: e.currentTarget.value })} />
       <span class="mono muted">Out {ch.id}</span>
     </header>
+    {#each (app.status?.advisories ?? []).filter((a) => a.startsWith(`${ch.id}:`)) as note}
+      <p class="advisory" role="status">⚠ {note.slice(ch.id.length + 2)}</p>
+    {/each}
+    {#if partners.length}
+      <p class="linknote muted">Linked with {partners.join(', ')}: gain, mute, polarity, crossover and EQ edits apply to
+        {partners.length > 1 ? 'all of them' : 'both'} (delay, name and routing stay separate).
+        <button class="link" onclick={() => app.patchChannel(ch.id, { link_group: 0 })}>Unlink {ch.id}</button></p>
+    {/if}
 
     <div class="row2">
       <label>Role label
@@ -63,7 +74,7 @@
       </div>
     </div>
     <div class="toggles">
-      <button class:on={ch.mute} aria-pressed={ch.mute} onclick={() => app.patchChannel(ch.id, { mute: !ch.mute })}>Mute</button>
+      <button class:on={ch.mute} aria-pressed={ch.mute} onclick={() => app.toggleMute(ch.id)}>Mute</button>
       <button class:on={ch.invert} aria-pressed={ch.invert} onclick={() => app.patchChannel(ch.id, { invert: !ch.invert })}>Invert polarity</button>
     </div>
 
@@ -73,14 +84,17 @@
         <label class="inline"><input type="checkbox" checked={!!x} onchange={(e) => xo(which as 'hp' | 'lp', e.currentTarget.checked ? {} : null)} /> {label}</label>
         {#if x}
           <div class="row3">
-            <input type="number" min="10" max="24000" value={x.freq_hz} aria-label="{label} frequency (Hz)"
-                   onchange={(e) => xo(which as 'hp' | 'lp', { freq_hz: +e.currentTarget.value })} />
-            <select value={x.slope_db} aria-label="{label} slope" onchange={(e) => xo(which as 'hp' | 'lp', { slope_db: +e.currentTarget.value })}>
-              {#each SLOPES as s}<option value={s}>{s} dB/oct</option>{/each}
-            </select>
-            <select value={x.type} aria-label="{label} type" onchange={(e) => xo(which as 'hp' | 'lp', { type: e.currentTarget.value as XoType })}>
-              {#each XOT as t}<option value={t.v}>{t.l}</option>{/each}
-            </select>
+            <label title="Where the filter starts working, in hertz">Frequency (Hz)
+              <input type="number" min="10" max="24000" value={x.freq_hz} aria-label="{label} frequency (Hz)"
+                     onchange={(e) => xo(which as 'hp' | 'lp', { freq_hz: +e.currentTarget.value })} /></label>
+            <label title="How steeply it rolls off past the frequency: decibels per octave. Higher = steeper">Slope
+              <select value={x.slope_db} aria-label="{label} slope" onchange={(e) => xo(which as 'hp' | 'lp', { slope_db: +e.currentTarget.value })}>
+                {#each SLOPES as s}<option value={s}>{s} dB/oct</option>{/each}
+              </select></label>
+            <label title="Filter shape. Linkwitz-Riley is the usual crossover choice: electrically it sums flat with the matching filter on the neighbouring speaker; the blend you hear still depends on the drivers and their time alignment">Type
+              <select value={x.type} aria-label="{label} type" onchange={(e) => xo(which as 'hp' | 'lp', { type: e.currentTarget.value as XoType })}>
+                {#each XOT as t}<option value={t.v}>{t.l}</option>{/each}
+              </select></label>
           </div>
         {/if}
       </div>
@@ -92,28 +106,41 @@
     </div>
     <p class="hint muted">Drag points on the graph · scroll for Q · double-click empty space to add</p>
     <div class="bands">
+      {#if rows.length}
+        <div class="band colhead" aria-hidden="true">
+          <span title="Tick to switch the band on; the number is the band (1-30)">On · #</span>
+          <span title="Filter shape: peak boosts or cuts around one frequency; shelves lift or lower everything above/below it">Type</span>
+          <span title="Center frequency of the band, in hertz">Freq (Hz)</span>
+          <span title="Boost (+) or cut (−) in decibels">Gain (dB)</span>
+          <span title="Width of the band: higher Q = narrower, lower Q = wider">Q (width)</span>
+        </div>
+      {/if}
       {#each rows as b (b.n)}
         <div class="band" class:off={!b.enabled}>
           <label class="inline n"><input type="checkbox" checked={b.enabled} aria-label="Band {b.n} on"
                  onchange={(e) => app.patchBand(ch.id, b.n, { enabled: e.currentTarget.checked })} />{b.n}</label>
-          <select value={b.type} aria-label="Band {b.n} type" onchange={(e) => app.patchBand(ch.id, b.n, { type: e.currentTarget.value as EqType })}>
+          <select value={b.type} aria-label="Band {b.n} type" title="Filter shape" onchange={(e) => app.patchBand(ch.id, b.n, { type: e.currentTarget.value as EqType })}>
             {#each EQT as t}<option value={t}>{t.replace('_', ' ')}</option>{/each}
           </select>
-          <input type="number" value={Math.round(b.freq_hz)} aria-label="Band {b.n} frequency" title="{fmtHz(b.freq_hz)} Hz"
+          <input type="number" value={Math.round(b.freq_hz)} aria-label="Band {b.n} frequency (Hz)" title="Center frequency: {fmtHz(b.freq_hz)} Hz"
                  onchange={(e) => app.patchBand(ch.id, b.n, { freq_hz: +e.currentTarget.value })} />
-          <input type="number" step="0.25" value={b.gain_db} aria-label="Band {b.n} gain"
+          <input type="number" step="0.25" value={b.gain_db} aria-label="Band {b.n} gain (dB)" title="Boost (+) or cut (−) in dB"
                  onchange={(e) => app.patchBand(ch.id, b.n, { gain_db: +e.currentTarget.value })} />
-          <input type="number" step="0.1" min="0.1" value={b.q} aria-label="Band {b.n} Q"
+          <input type="number" step="0.1" min="0.1" value={b.q} aria-label="Band {b.n} Q (width)" title="Q = width: higher is narrower"
                  onchange={(e) => app.patchBand(ch.id, b.n, { q: +e.currentTarget.value })} />
         </div>
       {/each}
     </div>
   </section>
+  {/key}
 {/if}
 
 <style>
   .inspector { padding: 14px; display: flex; flex-direction: column; gap: 12px; height: 100%; overflow: auto; }
   header { display: flex; align-items: center; gap: 10px; }
+  .linknote { margin: 6px 0 0; font-size: 12px; }
+  .advisory { margin: 6px 0 0; font-size: 12px; color: var(--caution); }
+  .linknote .link { padding: 2px 8px; font-size: 12px; margin-left: 6px; }
   .swatch { width: 12px; height: 12px; border-radius: 50%; flex: none; }
   .name { flex: 1; min-width: 0; font-weight: 600; font-size: 16px; background: transparent; border-color: transparent; }
   .name:hover, .name:focus { border-color: var(--line-2); }
@@ -135,6 +162,8 @@
   .bands { display: flex; flex-direction: column; }
   .band { display: grid; grid-template-columns: 48px 1.2fr 1fr 0.8fr 0.7fr; gap: 4px; padding: 3px 0; align-items: center; }
   .band.off { opacity: .5; }
+  .colhead { padding: 0 0 2px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line); }
+  .colhead span { cursor: help; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .band input, .band select { min-height: 30px; font-size: 12px; padding: 0 4px; }
   .n { font-family: var(--mono); font-size: 12px !important; }
 </style>

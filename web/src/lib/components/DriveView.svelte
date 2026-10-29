@@ -1,7 +1,9 @@
 <script lang="ts">
   import { app } from '../state.svelte'
   import Graph from './Graph.svelte'
+  import PredictionSummary from './PredictionSummary.svelte'
   import ProposalCard from './ProposalCard.svelte'
+  import MeasureDialog from './MeasureDialog.svelte'
   import type { Role } from '../types'
   import { ROLE_COLORS, ROLE_LABEL } from '../types'
 
@@ -15,11 +17,14 @@
 
   async function nudge(role: Role, d: number) {
     for (const c of (app.tune?.channels ?? []).filter((c) => c.role === role)) {
-      await app.patchChannel(c.id, { gain_db: Math.round((c.gain_db + d) * 2) / 2 })
+      await app.patchChannel(c.id, { gain_db: Math.round((c.gain_db + d) * 2) / 2 }, { link: false })
     }
   }
   const master = $derived(app.tune?.master_gain_db ?? 0)
+  // A real DSP never receives master (its parameter is unverified), so don't offer it as a control.
+  const masterLocal = $derived(app.status?.master_on_device === false)
   const ab = $derived(app.status?.ab)
+  let measuring = $state(false)
   const SEATS = [{ v: 'driver', l: 'Driver' }, { v: 'passenger', l: 'Passenger' }, { v: 'center', l: 'Both seats' }]
 </script>
 
@@ -32,6 +37,7 @@
 
   <section class="panel graph">
     <div class="head"><span class="label">Response · {app.seat}</span><span class="mono muted">target: {app.system?.target_name ?? '—'}</span></div>
+    <PredictionSummary />
     <div class="plot"><Graph compact /></div>
   </section>
 
@@ -51,15 +57,17 @@
     <div class="panel tile">
       <div class="head"><span class="swatch" style="background:var(--accent)"></span><span class="label">Master</span></div>
       <div class="val mono">{fmt(master)}<small> dB</small></div>
+      {#if masterLocal}<p class="note">Workstation only · not sent to this DSP. Use the Director for volume.</p>{/if}
       <div class="pm">
-        <button aria-label="Master down 1 dB" onclick={() => app.setMaster(Math.max(-80, master - 1))}>−</button>
-        <button aria-label="Master up 1 dB" onclick={() => app.setMaster(Math.min(0, master + 1))}>+</button>
+        <button aria-label="Master down 1 dB" disabled={masterLocal} onclick={() => app.setMaster(Math.max(-80, master - 1))}>−</button>
+        <button aria-label="Master up 1 dB" disabled={masterLocal} onclick={() => app.setMaster(Math.min(0, master + 1))}>+</button>
       </div>
     </div>
   </section>
 
+  <MeasureDialog bind:open={measuring} />
   <div class="actions">
-    <button class="primary" onclick={() => app.toast('Live measurement arrives with the REW link and the in-truck mic', 'info')}>Measure this seat</button>
+    <button class="primary" onclick={() => (measuring = true)}>Measure this seat</button>
     <button disabled={!(ab?.A && ab?.B)} onclick={() => app.toggleAB()}>
       A / B{#if ab?.active} · on {ab.active}{/if}
     </button>
@@ -75,6 +83,7 @@
   .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .graph { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
   .plot { height: min(40dvh, 360px); }
+  .note { margin: 0; font-size: 12px; color: var(--caution); }
   .levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--gap); }
   .tile { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
   .tile .head { justify-content: flex-start; }

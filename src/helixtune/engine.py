@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
@@ -16,16 +17,43 @@ from typing import Literal
 
 import numpy as np
 
-from . import afpx, autotune, equipment, mapping, measurements, safety, targets
+from . import afpx, durable, autotune, measure_run, equipment, mapping, measurements, safety, targets
 from . import protection_provenance as provenance
+from . import workstation
 from .proposals import Proposal, ProposalConflict, ProposalContext, fingerprint
 from .devicefile import ParamMap
-from .model import Tune
+from .model import Tune, Role
 from .protocol import commands
 from .protocol.client import Client
+from .protocol.session import Session, SessionError
+
+
+def _parse_policy(text: str) -> safety.SafetyPolicy:
+    raw = json.loads(text)
+    if not isinstance(raw, dict) or not isinstance(raw.get("roles", {}), dict):
+        raise ValueError("safety policy must be an object")
+    # fill settings added after this policy file was written, keeping the user's values
+    for role, defaults in safety.DEFAULT_ROLES.items():
+        r = raw.setdefault("roles", {}).setdefault(role.value, {})
+        if not isinstance(r, dict):
+            raise ValueError(f"safety policy role {role.value} must be an object")
+        for k, v in defaults.model_dump().items():
+            r.setdefault(k, v)
+    return safety.SafetyPolicy.model_validate(raw)
+
+
+def _parse_targets(text: str) -> list[targets.Target]:
+    raw = json.loads(text)
+    if not isinstance(raw, list):
+        raise ValueError("saved targets must be a list")
+    return [targets.Target.model_validate(x) for x in raw]
 
 
 class EngineError(RuntimeError):
+    pass
+
+
+class OutputSetupConflict(EngineError):
     pass
 
 
@@ -67,6 +95,7 @@ class DeviceState:
     baselined: bool = False         # completed writes acknowledged; not hardware readback verification
     sync_state: Literal["disconnected", "unsynchronized", "applying", "synchronized", "uncertain"] = "disconnected"
     last_error: str | None = None
+    needs_reconnect: bool = False   # set by a missed keep-alive; every write refused until reconnect
 
 
 @dataclass
@@ -85,44 +114,293 @@ class Engine:
     revision: int = 0
     proposals: dict = field(default_factory=dict)
     ab: dict = field(default_factory=lambda: {"A": None, "B": None, "active": None})
+    # output -> (level before it was muted, routing/role fingerprint); cleared on (dis)connect
+    _muted_at: dict = field(default_factory=dict)
+    # REW access for automated measurement runs (tests inject fakes).
+    rew_control_factory: object = None
+    rew_reader_factory: object = None
+    # Off unless `serve --allow-physical-writes`: supervised write sessions on a real DSP.
+    physical_writes_allowed: bool = False
+    # PC-Tool pings every ~0.85 s inside a session; None disables the pinger (tests).
+    keepalive_s: float | None = None
 
     def __post_init__(self):
         self._lock = threading.RLock()
+        self.session = None
+        self._connection_epoch = 0
+        self._connection_nonce = secrets.token_hex(16)
+        if not self.demo and (self.data_dir / '.helix-unwound-demo.json').exists():
+            raise EngineError('Demo state cannot be opened by a hardware engine; use the demo command or a different directory')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "snapshots").mkdir(exist_ok=True)
+        self.save_error = None
+        try:
+            saved, self.recovery_notice = workstation.load(self.data_dir)
+        except workstation.RecoveryError as exc:
+            raise EngineError(str(exc)) from exc
         cur = self.data_dir / "current.json"
-        if cur.exists():
+        if saved:
+            self.tune = saved.tune
+            self.history = saved.history
+            self.redo_stack = saved.redo
+            self.ab = {"A": saved.ab.A, "B": saved.ab.B, "active": saved.ab.active}
+        elif cur.exists():
             self.tune = Tune.model_validate_json(cur.read_text())
         self.measurements = measurements.Store(self.data_dir)
+        # Safety-relevant state recovered from a backup is a fault: every DSP write path stays
+        # blocked until the owner acknowledges it (Codex review: never silently run on an older,
+        # possibly weaker policy). Unreadable state with no usable backup refuses to start.
+        # Faults are persisted BEFORE any recovered file is rewritten, so a restart cannot clear
+        # them; only acknowledge_recovery removes them (Codex review of 0fb6643).
+        self._faults_file = self.data_dir / "state_faults.json"
+        self.state_faults: list[str] = []
+        if self._faults_file.exists():
+            try:
+                saved_faults = json.loads(self._faults_file.read_text())
+                if not isinstance(saved_faults, list) or not all(isinstance(x, str) for x in saved_faults):
+                    raise ValueError("unsupported shape")
+                self.state_faults = saved_faults
+            except Exception:
+                self.state_faults = ["The record of unacknowledged recovered state could not be read; review all "
+                                     "saved settings before sending anything to the DSP."]
+
+        def recover(path, parse, what, critical=True):
+            if not path.exists() and not durable.backup_path(path).exists():
+                return None
+            try:
+                value, notice = durable.read_with_backup(path, parse, what)
+            except durable.StateRecoveryError as exc:
+                raise EngineError(str(exc)) from exc
+            if notice:
+                self.recovery_notice = " ".join(x for x in (self.recovery_notice, notice) if x)
+                if critical:
+                    self.state_faults.append(notice)
+                    durable.atomic_write(self._faults_file, json.dumps(self.state_faults, indent=2))
+            return value
+
         tf = self.data_dir / "targets.json"
-        self.user_targets: list[targets.Target] = (
-            [targets.Target.model_validate(t) for t in json.loads(tf.read_text())] if tf.exists() else [])
+        self.user_targets: list[targets.Target] = recover(tf, _parse_targets, "Saved targets", critical=False) or []
         self.target_name = "Car preference"
         df = self.data_dir / "system.json"
-        if df.exists():
-            self.design = equipment.SystemDesign.model_validate_json(df.read_text())
+        design = recover(df, equipment.SystemDesign.model_validate_json, "Equipment design")
+        if design is not None:
+            self.design = design
             if equipment.normalize_ports(self.design):
-                df.write_text(self.design.model_dump_json(indent=2))
+                self._write_design(df)
         else:
             self.design = equipment.seed(self.tune)
-            df.write_text(self.design.model_dump_json(indent=2))
+            self._write_design(df)
         pol = self.data_dir / "safety.json"
-        if pol.exists():
-            raw = json.loads(pol.read_text())
-            # fill settings added after this policy file was written, keeping the user's values
-            for role, defaults in safety.DEFAULT_ROLES.items():
-                r = raw.setdefault("roles", {}).setdefault(role.value, {})
-                for k, v in defaults.model_dump().items():
-                    r.setdefault(k, v)
-            self.policy = safety.SafetyPolicy.model_validate(raw)
-            pol.write_text(self.policy.model_dump_json(indent=2))
-        else:
-            pol.write_text(self.policy.model_dump_json(indent=2))
+
+        policy = recover(pol, _parse_policy, "Safety policy")
+        if policy is not None:
+            self.policy = policy
+        durable.write_with_backup(pol, self.policy.model_dump_json(indent=2), valid=_parse_policy)
+        # A measurement run that was still running (or left mutes unrestored) when the process
+        # stopped is reported, never silently resumed or "fixed".
+        self._measure_run = None
+        self.interrupted_run = None
+        run_file = self.data_dir / measure_run.RUN_FILE
+        if run_file.exists():
+            try:
+                record = json.loads(run_file.read_text())
+                if isinstance(record, dict) and (record.get("status") == "running" or (
+                        (record.get("changed") or record.get("delay_changed") or record.get("invert_changed"))
+                        and not record.get("restored"))):
+                    self.interrupted_run = record
+            except Exception:
+                self.interrupted_run = {"error": "The last measurement run record could not be read; check output mutes."}
         protection_file = self.data_dir / "protections.json"
-        self.protection_book = provenance.load(protection_file.read_text() if protection_file.exists() else None)
+        book = recover(protection_file, provenance.load, "Output protections")
+        self.protection_book = book if book is not None else provenance.load(None)
         self.protections = self.protection_book.effective()
+        self.advisory_protections = self.protection_book.effective(include_advisory=True)
         # Migrate current tune + equipment conservatively; snapshots never own these floors.
         self._persist_protections(self.tune)
+
+    def _write_design(self, path: Path, design: equipment.SystemDesign | None = None) -> None:
+        durable.write_with_backup(path, (design or self.design).model_dump_json(indent=2),
+                                  valid=equipment.SystemDesign.model_validate_json)
+
+    def acknowledge_recovery(self, reason: str) -> dict:
+        """Owner review of state restored from backups; re-enables DSP writes."""
+        with self._lock:
+            if not self.state_faults:
+                raise EngineError("There is no recovered state to acknowledge")
+            if len(reason.strip()) < 8:
+                raise EngineError("Say what you checked (at least 8 characters)")
+            self._log("owner", f"acknowledged recovered state ({'; '.join(self.state_faults)}): {reason.strip()}")
+            self._faults_file.unlink(missing_ok=True)
+            self.state_faults = []
+            self.revision += 1
+            return {"ok": True}
+
+    # ---- automated seat measurement (pink noise + REW RTA, one output at a time) ----------
+
+    def _acoustic_run_preconditions(self) -> None:
+        self._require_no_state_fault()
+        if self.client is None or not self.device.writes_enabled:
+            raise EngineError("Connect a DSP (or the emulator) with writes enabled to run measurements")
+        if self.device.needs_reconnect or not self.device.baselined or self.device.sync_state != "synchronized":
+            raise EngineError("The DSP must be synchronized with this workstation before measuring")
+        if self._measure_run is not None and self._measure_run.active:
+            raise EngineError("A measurement run is already in progress")
+        if self.interrupted_run is not None:
+            raise EngineError("Resolve the interrupted measurement run first (restore or discard its changes)")
+
+    def prepare_align_run(self, *, reference: str, adjust: str, carry: list[str] | None = None, seat: str = "driver",
+                          steps: int = 9, span_ms: float | None = None, seconds: float = 6.0, settle_s: float = 0.5,
+                          level_dbfs: float = -24.0, source: str = "external", port: int = 4735):
+        """Crossover summing alignment for one pair (not started). Owner-only at the API."""
+        from .rew import RewClient
+        with self._lock:
+            self._acoustic_run_preconditions()
+            ref, adj = self.tune.channel(reference), self.tune.channel(adjust)
+            carry_ids = [self.tune.channel(c).id for c in (carry or [])]
+            if ref.id == adj.id or ref.id in carry_ids or adj.id in carry_ids or len(set(carry_ids)) != len(carry_ids):
+                raise EngineError("Choose two different outputs; carried outputs must be distinct from the pair")
+            for ch in (ref, adj):
+                if ch.mute:
+                    raise EngineError(f"Output {ch.id} is muted; unmute it before aligning")
+                if not self.driver_identity(ch.id):
+                    raise EngineError(f"Record the drivers on output {ch.id} in Setup first")
+            # The pair's crossover: one output's low-pass meeting the other's high-pass within an
+            # octave. Unrelated filter edges (e.g. LP 80 Hz vs HP 3 kHz) are not a crossover, and two
+            # plausible meetings are ambiguous (Codex review of 92bb761).
+            meetings = [(lp.freq_hz * hp.freq_hz) ** 0.5 for lp, hp in ((ref.lp, adj.hp), (adj.lp, ref.hp))
+                        if lp is not None and hp is not None and 0.5 <= lp.freq_hz / hp.freq_hz <= 2.0]
+            if len(meetings) != 1:
+                raise EngineError(f"{ref.id} and {adj.id} do not share one clear crossover (one output's low-pass must "
+                                  "meet the other's high-pass within an octave); check their crossovers first")
+            fc = meetings[0]
+            if not 3 <= steps <= 21 or steps % 2 == 0:
+                raise EngineError("Steps must be an odd number from 3 to 21")
+            span = span_ms if span_ms is not None else min(10.0, max(0.5, 1000.0 / fc))   # about one period
+            if not 0.2 <= span <= 10 or not 2 <= seconds <= 30 or not 0 <= settle_s <= 5 or not -50 <= level_dbfs <= -6:
+                raise EngineError("Span 0.2-10 ms, 2-30 s per step, settle 0-5 s, level -50 to -6 dBFS")
+            if source not in ("rew", "external"):
+                raise EngineError("Noise source must be 'rew' or 'external'")
+            half = span / 2
+            offsets = [round(-half + i * span / (steps - 1), 4) for i in range(steps)]
+            base = {c: self.tune.channel(c).delay_ms for c in [adj.id, *carry_ids]}
+            offsets = [o for o in offsets if all(base[c] + o >= 0 for c in base)]     # delays cannot go negative
+            if 0.0 not in offsets:
+                offsets = sorted(set(offsets + [0.0]))
+            if len(offsets) < 3:
+                raise EngineError(f"{adj.id} has too little delay to search earlier; add delay to it (or to "
+                                  f"{ref.id}'s side) first, or narrow the span")
+            state = measure_run.new_align_state(ref.id, adj.id, carry_ids, seat, round(fc, 1), offsets,
+                                                seconds, settle_s, level_dbfs, source)
+            run = measure_run.AlignRun(self, state, (self.rew_control_factory or measure_run.RewControl)(port),
+                                       (self.rew_reader_factory or RewClient)(port))
+            self._measure_run = run
+            return run
+
+    def start_align_run(self, **kw) -> dict:
+        run = self.prepare_align_run(**kw)
+        threading.Thread(target=run.execute, name="helix-align", daemon=True).start()
+        return run.state.view()
+
+    def propose_measured_alignment(self, state, offset_ms: float, invert: bool = False) -> str:
+        """Turn an alignment run's best offset into a reviewed proposal (never applied here)."""
+        from .proposals import Edit, Proposal
+        a = state.align
+        with self._lock:
+            edits = []
+            for cid in [a["adjust"], *a["carry"]]:
+                before = state.original_delays[cid]
+                after = round(before + offset_ms, 4)
+                edits.append(Edit(channel=cid, field="delay_ms", value=after, before=before,
+                                  label=f"{cid} delay {before:.3f} → {after:.3f} ms ({offset_ms:+.3f})"))
+            if invert:
+                was = state.original_inverts[a["adjust"]]
+                edits.append(Edit(channel=a["adjust"], field="invert", value=not was, before=was,
+                                  label=f"{a['adjust']} polarity {'inverted' if was else 'normal'} → "
+                                        f"{'normal' if was else 'inverted'} (summed better flipped; check wiring)"))
+            p = Proposal(kind="alignment", title=f"Align {a['adjust']} to {a['reference']} at {a['fc']:g} Hz",
+                         edits=edits, metrics={"gain_db": a.get("gain_db"), "results": a["results"],
+                                               "fc_hz": a["fc"], "seat": state.seat, "run": state.id},
+                         notes=[f"Measured: pink noise + RTA at the {state.seat} seat with the mic held still; the pair "
+                                f"summed {a.get('gain_db')} dB louder through {a['fc']/2:g}-{a['fc']*2:g} Hz.",
+                                "Magnitude-based: listen afterwards and re-measure; other seats and pairs may shift."])
+            # Bound to the capture-time processing (filters, EQ, level, mute, routing, delay, polarity)
+            # and drivers of every output involved: any change refuses the proposal (Codex review).
+            involved = [a["reference"], a["adjust"], *a["carry"]]
+            p.context = self._context(state.seat, {}, involved, driver_channels=involved)
+            return self._store_proposal(p, "measure")["id"]
+
+    def prepare_measure_run(self, *, outputs: list[str], seat: str, seconds: float, settle_s: float,
+                            level_dbfs: float, source: str, port: int = 4735):
+        """Validate and build a run (not started). Owner-only at the API."""
+        from .rew import RewClient
+        with self._lock:
+            self._acoustic_run_preconditions()
+            ids = [self.tune.channel(c).id for c in outputs]
+            if not ids or len(set(ids)) != len(ids):
+                raise EngineError("Choose one or more different outputs to measure")
+            muted = [c for c in ids if self.tune.channel(c).mute]
+            if muted:
+                raise EngineError(f"Output(s) {', '.join(muted)} are muted; unmute them before measuring")
+            missing = [c for c in ids if not self.driver_identity(c)]
+            if missing:
+                raise EngineError(f"Record the drivers on output(s) {', '.join(missing)} in Setup first")
+            if not 3 <= seconds <= 120 or not 0 <= settle_s <= 5 or not -50 <= level_dbfs <= -6:
+                raise EngineError("Averaging 3-120 s, settle 0-5 s, pink noise level -50 to -6 dBFS")
+            if source not in ("rew", "external"):
+                raise EngineError("Noise source must be 'rew' or 'external'")
+            control = (self.rew_control_factory or measure_run.RewControl)(port)
+            reader = (self.rew_reader_factory or RewClient)(port)
+            state = measure_run.new_state(ids, seat, seconds, settle_s, level_dbfs, source)
+            run = measure_run.MeasureRun(self, state, control, reader)
+            self._measure_run = run
+            return run
+
+    def start_measure_run(self, **kw) -> dict:
+        run = self.prepare_measure_run(**kw)
+        threading.Thread(target=run.execute, name="helix-measure", daemon=True).start()
+        return run.state.view()
+
+    def measure_run_view(self) -> dict | None:
+        return self._measure_run.state.view() if self._measure_run is not None else None
+
+    def stop_measure_run(self) -> dict | None:
+        if self._measure_run is not None:
+            self._measure_run.stop()
+        return self.measure_run_view()
+
+    def resolve_interrupted_measure_run(self, action: str) -> dict:
+        """'restore': undo the interrupted run's mute changes now (needs a synchronized DSP);
+        'discard': forget the record and leave mutes as they are."""
+        with self._lock:
+            record = self.interrupted_run
+            if record is None:
+                raise EngineError("There is no interrupted measurement run")
+            if action == "restore":
+                changed, original = record.get("changed") or [], record.get("original_mutes") or {}
+                dchanged, dorig = record.get("delay_changed") or [], record.get("original_delays") or {}
+                ichanged, iorig = record.get("invert_changed") or [], record.get("original_inverts") or {}
+                if (not changed and not dchanged and not ichanged) or any(c not in original for c in changed) \
+                        or any(c not in dorig for c in dchanged) or any(c not in iorig for c in ichanged):
+                    raise EngineError("The interrupted run record has no usable restore information; fix it by hand")
+                self._require_writable()
+                if self.device.sync_state != "synchronized":
+                    raise EngineError("The DSP must be synchronized before restoring")
+
+                def fn(t):
+                    for c in changed:
+                        t.channel(c).mute = bool(original[c])
+                    for c in dchanged:
+                        t.channel(c).delay_ms = float(dorig[c])
+                    for c in ichanged:
+                        t.channel(c).invert = bool(iorig[c])
+                self.edit("owner", "restore mutes/delays after interrupted measurement run", fn)
+            elif action != "discard":
+                raise EngineError("Choose restore or discard")
+            (self.data_dir / measure_run.RUN_FILE).unlink(missing_ok=True)
+            self.interrupted_run = None
+            self.revision += 1
+            self._log("owner", f"{action} interrupted measurement run")
+            return {"ok": True}
 
     @classmethod
     def from_param_map(cls, pm: ParamMap, data_dir: Path) -> "Engine":
@@ -130,12 +408,45 @@ class Engine:
 
     # ---- device -------------------------------------------------------------------
 
+    @property
+    def demo(self) -> bool:
+        return bool(getattr(self.mapping, 'synthetic', False))
+
     def attach(self, client: Client, kind: str, port: str | None = None) -> DeviceState:
         with self._lock:
-            info = client.identify()
-            if info.model_type != commands.PRO_MK2:
-                raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
+            if self.demo:
+                from .emulator import EmulatedDevice
+                if kind != 'emulator' or not isinstance(client.t, EmulatedDevice):
+                    raise EngineError('Demo mode only connects to its in-memory emulator')
+            from .emulator import EmulatedDevice
+            if client.allow_writes and not isinstance(client.t, EmulatedDevice) and not (
+                    self.physical_writes_allowed and client.physical_session):
+                raise EngineError("Physical writes are disabled; start the server with --allow-physical-writes "
+                                  "for a supervised session, or connect read-only")
+            session = None
+            if client.allow_writes:
+                self._require_no_state_fault()
+                # Writes need PC-Tool's session. Session.open owns the first contact: its baud
+                # recovery must run before identify, or a DSP left at high speed is unreachable.
+                # The emulator answers synchronously; real hardware needs PC-Tool's settle times.
+                quick = isinstance(client.t, EmulatedDevice)
+                session = Session(client, lambda baud: setattr(client.t, "baudrate", baud),
+                                  **({"sleep": lambda s: None} if quick else {}))
+                try:
+                    info = session.open()     # a partial open closes itself before raising
+                except SessionError as exc:
+                    raise EngineError(str(exc)) from exc
+                except Exception as exc:
+                    raise EngineError(f"Could not open a DSP session: {exc}") from exc
+            else:
+                info = client.identify()      # read-only: identify only, no session
+                if info.model_type != commands.PRO_MK2:
+                    raise EngineError(f"connected device is {info.model_string!r}, not a HELIX DSP PRO MK2")
+            self._connection_epoch += 1
+            self._muted_at.clear()
             self.client = client
+            self.session = session
+            self._start_keepalive()
             self.device = DeviceState(kind=kind, port=port, model=info.model_string,
                                       model_type=info.model_type, writes_enabled=client.allow_writes,
                                       sync_state="unsynchronized")
@@ -144,13 +455,68 @@ class Engine:
             self._log("engine", f"attached {kind} {port or ''} ({info.model_string})")
             return self.device
 
+    def _start_keepalive(self) -> None:
+        if self.session is None or not self.keepalive_s:
+            return
+        epoch = self._connection_epoch
+
+        def loop():
+            while True:
+                time.sleep(self.keepalive_s)
+                with self._lock:
+                    if self._connection_epoch != epoch or self.session is None:
+                        return
+                    try:
+                        self.session.keepalive()
+                    except Exception as exc:
+                        # Same recovery contract as a failed write: no incremental writes until a
+                        # person deliberately overwrites everything. No automatic close/baud/rollback.
+                        self.applied_image = None
+                        self.device.baselined = False
+                        self.pending_writes = len(self.mapping.render(self.tune))
+                        self.device.sync_state = "uncertain"
+                        self.device.needs_reconnect = True
+                        self.device.last_error = (
+                            f"keep-alive failed ({exc}); device state is unknown. Incremental writes are "
+                            "paused. Reconnect and perform a confirmed full overwrite to resynchronize.")
+                        self.revision += 1
+                        self._log("engine", self.device.last_error)
+                        return
+        threading.Thread(target=loop, name="helix-keepalive", daemon=True).start()
+
     def detach(self) -> None:
         with self._lock:
+            session, self.session = self.session, None
+            if session is not None:
+                try:
+                    session.close()          # leave the DSP at 19200, session ended
+                except Exception as exc:
+                    self._log("engine", f"session close failed; DSP may still be at high speed ({exc})")
+            client = self.client
             self.client = None
+            self._connection_epoch += 1
+            self._muted_at.clear()
             self.device = DeviceState()
             self.applied_image = None
+            if client is not None:
+                close = getattr(client.t, 'close', None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception as exc:
+                        raise EngineError('Device detached, but closing the transport failed') from exc
 
-    def push_full(self, confirm: str) -> int:
+    def overwrite_review(self) -> dict:
+        with self._lock:
+            return {'context': fingerprint({'tune': self.tune.model_dump(mode='json'),
+                                            'device': self.device.__dict__, 'connection_epoch': self._connection_epoch,
+                                            'boot': self._connection_nonce}),
+                    'revision': self.revision, 'connection_epoch': self._connection_epoch,
+                    'tune_name': self.tune.name, 'device': dict(self.device.__dict__),
+                    'problems': self._check(self.tune), 'parameter_count': len(self.mapping.render(self.tune)),
+                    **self._physical_scope(self.tune)}
+
+    def push_full(self, confirm: str, expected_context: str | None = None) -> int:
         """Overwrite every managed parameter on the device with the current tune.
 
         Destroys whatever tune is on the device. Requires confirm == "OVERWRITE".
@@ -159,21 +525,71 @@ class Engine:
             if confirm != "OVERWRITE":
                 raise EngineError('full push overwrites the tune on the DSP; pass confirm="OVERWRITE"')
             self._require_writable()
+            if expected_context is not None and expected_context != self.overwrite_review()['context']:
+                raise EngineError('Tune or connection changed; review the overwrite again')
             tune = Tune.model_validate(self.tune.model_dump())
             problems = self._check(tune)
             if problems:
                 raise SafetyRejected(problems)
             img = self.mapping.render(tune)
             self._persist_protections(tune)
-            n = self._write_image(img, full=True)
+            n = self._write_image(img, tune=tune, full=True)
             self._log("engine", "full push to device", n)
             return n
 
+    def _require_no_state_fault(self):
+        if self.state_faults:
+            raise EngineError("Saved state was restored from a backup: " + " ".join(self.state_faults)
+                              + " Review it and acknowledge the recovery before sending anything to the DSP.")
+
     def _require_writable(self):
+        self._require_no_state_fault()
         if self.client is None:
             raise EngineError("no device attached")
         if not self.device.writes_enabled:
             raise EngineError("device attached read-only; writes are disabled")
+        if self.device.needs_reconnect:
+            raise EngineError("the DSP stopped answering keep-alives; disconnect and reconnect before "
+                              "sending anything (nothing was written)")
+
+    def backup_stored_preset(self) -> dict:
+        from . import stored_preset
+        with self._lock:
+            if self.demo:
+                raise EngineError("The demo workstation does not contain a hardware stored preset")
+            if self.client is None or self.device.writes_enabled:
+                raise EngineError("Connect read-only before backing up a stored preset")
+            from .emulator import EmulatedDevice
+            quick = isinstance(self.client.t, EmulatedDevice)
+            transport = self.client.t
+            try:
+                preset = stored_preset.backup(self.client, lambda baud: setattr(transport, "baudrate", baud),
+                                              **({"sleep": lambda s: None} if quick else {}))
+            except TimeoutError as exc:
+                raise EngineError("The DSP stopped answering during the stored-preset backup. Nothing was written. "
+                                  "Session cleanup was attempted; if the DSP stays silent, the next connection's "
+                                  "baud recovery or a power cycle returns it to 19200.") from exc
+            except (ValueError, SessionError) as exc:
+                raise EngineError(str(exc)) from exc
+            directory = self.data_dir / "backups"
+            directory.mkdir(mode=0o700, exist_ok=True)
+            backup_id = secrets.token_hex(16)
+            try:
+                stored_preset.save(directory / f"stored-{backup_id}.afpx", preset)
+            except OSError as exc:
+                raise EngineError("Could not confirm the stored-preset backup was saved. Check available disk space and permissions before retrying; no tune was adopted.") from exc
+            self._log("owner", "backed up stored preset; current RAM was not read or changed")
+            return {"id": backup_id, "bytes": len(preset.blob), "xml_bytes": len(preset.xml),
+                    "sha256": preset.sha256, "xml_sha256": preset.xml_sha256, "stored_only": True}
+
+    def stored_backup_path(self, backup_id: str) -> Path:
+        import re
+        if not re.fullmatch(r"[0-9a-f]{32}", backup_id):
+            raise EngineError("Invalid stored-backup identifier")
+        path = self.data_dir / "backups" / f"stored-{backup_id}.afpx"
+        if not path.is_file():
+            raise EngineError("Stored backup not found")
+        return path
 
     def _write(self, changes: dict[int, bytes]) -> int:
         ops = mapping.coalesce(changes)
@@ -181,14 +597,43 @@ class Engine:
             self.client.write_ram(addr, data)
         return len(ops)
 
-    def _write_image(self, img: dict[int, bytes], *, full: bool = False) -> int:
+    def _is_physical(self) -> bool:
+        from .emulator import EmulatedDevice
+        return self.client is not None and not isinstance(self.client.t, EmulatedDevice)
+
+    def _master_on_device(self) -> bool:
+        """False while a real DSP is attached: its images exclude the provisional master."""
+        return not self._is_physical()
+
+    def _predict(self, m, tune: Tune, grid):
+        return measurements.predict(m, tune, grid, include_master=self._master_on_device())
+
+    def _physical_scope(self, tune: Tune) -> dict:
+        physical = self._is_physical()
+        return {"physical": physical,
+                "excluded": ["master gain (GAIN1: role not captured)"] if physical else [],
+                "ineligible": mapping.physical_problems(tune) if physical else []}
+
+    def _write_image(self, img: dict[int, bytes], *, tune: Tune, full: bool = False) -> int:
         """Only a completely acknowledged update establishes a software baseline.
 
         A timeout may mean a write landed but its reply was lost. Do not retry a
         partial diff or claim rollback: stop incremental writes until a person
         deliberately overwrites the managed parameters again.
+
+        On a real DSP only capture-verified settings are sent, and provisional parameters are
+        excluded from the image, so the baseline and every later diff cover verified words only.
         """
         self._require_writable()
+        if self._is_physical():
+            problems = mapping.physical_problems(tune)
+            if problems:
+                raise EngineError("Not sent to the DSP: " + "; ".join(problems) + ". Nothing was written.")
+            img = {a: w for a, w in img.items() if a not in self.mapping.provisional}
+        blocked = sorted(set(img) & self.mapping.protected)
+        if blocked:
+            raise EngineError("refusing to write Director/remote volume parameters "
+                              + ", ".join(f"0x{a:04x}" for a in blocked) + "; nothing was written")
         if not full and not self.device.baselined:
             raise EngineError("device has no baseline; a confirmed full overwrite is required")
         changes = mapping.diff(None if full else self.applied_image, img)
@@ -228,9 +673,10 @@ class Engine:
             self._persist_protections(new)
             writes = 0
             if self.client is not None and self.device.writes_enabled and self.device.baselined:
-                writes = self._write_image(img)
+                writes = self._write_image(img, tune=new)
             else:
                 self.pending_writes = len(mapping.diff(self.applied_image, img))
+            self._track_mutes(self.tune, new)
             self.history.append(self.tune)
             self.history = self.history[-200:]
             self.redo_stack.clear()
@@ -238,6 +684,28 @@ class Engine:
             self._autosave()
             self._log(source, summary, writes)
             return {"ok": True, "writes": writes, "live": writes > 0}
+
+    def output_setup_review(self, cid: str) -> dict:
+        """Bind an output-assignment edit to current settings, equipment and send state."""
+        with self._lock:
+            channel = self.tune.channel(cid)
+            context = fingerprint({
+                "channel": channel, "design": self.design, "policy": self.policy,
+                "protections": self.protections, "device": self.device.__dict__,
+                "connection": self._connection_epoch, "boot": self._connection_nonce,
+            })
+            return {"channel": channel.model_dump(mode="json"), "context": context,
+                    "live": bool(self.client and self.device.writes_enabled and self.device.baselined)}
+
+    def save_output_setup(self, cid: str, *, name: str, role: Role, mix: dict[str, float],
+                          expected_context: str, source: str) -> dict:
+        with self._lock:
+            if self.output_setup_review(cid)["context"] != expected_context:
+                raise OutputSetupConflict("Output, equipment, protection rules or connection changed. Reopen the output editor and review the current settings.")
+            def update(t):
+                channel = t.channel(cid)
+                channel.name, channel.role, channel.mix = name, role, mix
+            return self.edit(source, f"{cid.upper()}: updated output name, role and input route", update)
 
     def edit(self, source: str, summary: str, fn) -> dict:
         """Copy the tune, let fn mutate the copy, then apply it."""
@@ -256,12 +724,17 @@ class Engine:
             problems = self._check(prev)
             if problems:
                 raise SafetyRejected(problems)
-            res = self._adopt(prev, source, "undo")
-            self.history.pop()
-            self.redo_stack.append(cur)
-            return res
+            return self._adopt(prev, source, "undo",
+                               history=self.history[:-1], redo=(self.redo_stack + [cur])[-200:])
 
-    def _adopt(self, t: Tune, source: str, summary: str) -> dict:
+    def redo(self, source: str = "user") -> dict:
+        with self._lock:
+            if not self.redo_stack:
+                raise EngineError("nothing to redo")
+            return self._adopt(self.redo_stack[-1], source, "redo",
+                               history=(self.history + [self.tune])[-200:], redo=self.redo_stack[:-1])
+
+    def _adopt(self, t: Tune, source: str, summary: str, *, history=None, redo=None, ab=None) -> dict:
         t = Tune.model_validate(t.model_dump())
         problems = self._check(t)
         if problems:
@@ -270,9 +743,14 @@ class Engine:
         self._persist_protections(t)
         writes = 0
         if self.client is not None and self.device.writes_enabled and self.device.baselined:
-            writes = self._write_image(img)
+            writes = self._write_image(img, tune=t)
         else:
             self.pending_writes = len(mapping.diff(self.applied_image, img))
+        self._track_mutes(self.tune, t)
+        self.history = (self.history + [self.tune])[-200:] if history is None else history
+        self.redo_stack = [] if redo is None else redo
+        if ab is not None:
+            self.ab = ab
         self.tune = t
         self._autosave()
         self._log(source, summary, writes)
@@ -289,9 +767,7 @@ class Engine:
         of several concurrent writers wins; with overwrite, a temp file replaces the old one."""
         path = self.data_dir / "snapshots" / f"{safe}.json"
         if overwrite:
-            tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-            tmp.write_text(text)
-            os.replace(tmp, path)
+            durable.atomic_write(path, text)
             return
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -319,10 +795,7 @@ class Engine:
             problems = self._check(t)
             if problems:
                 raise SafetyRejected(problems)
-            previous = self.tune
-            result = self._adopt(t, source, f"loaded snapshot {name}")
-            self.history.append(previous)
-            return result
+            return self._adopt(t, source, f"loaded snapshot {name}")
 
     def snapshot_tune(self, name: str) -> Tune:
         path = self.data_dir / "snapshots" / f"{name}.json"
@@ -340,7 +813,8 @@ class Engine:
         self._write_snapshot(safe, tune.model_dump_json(indent=2), overwrite)
         problems = self._check(tune)
         self._log("engine", f"imported preset {safe}" + (f" ({len(problems)} safety issues)" if problems else ""))
-        return {"snapshot": safe, "warnings": rep.warnings, "safety_problems": problems}
+        return {"snapshot": safe, "warnings": rep.warnings, "safety_problems": problems,
+                "safety_advisories": self._advisories(tune)}
 
     def import_mdat(self, path: Path, tune_snapshot: str | None) -> list[dict]:
         tune = self.snapshot_tune(tune_snapshot) if tune_snapshot else None
@@ -351,16 +825,20 @@ class Engine:
         return [{"id": m.id, "name": m.name, "channels": m.channels} for m in ms]
 
     def measurement_curves(self, mid: str, smoothing: float = 6, points: int = 240) -> dict:
-        m = self.measurements.get(mid)
-        grid = measurements.GRID
-        measured = np.interp(np.log(grid), np.log(m.freqs), m.spl)
-        predicted = measurements.predict(m, self.tune, grid)
-        measured = measurements.smooth(measured, grid, smoothing)
-        predicted = measurements.smooth(predicted, grid, smoothing)
-        idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
-        return {"id": m.id, "name": m.name, "channels": m.channels, "has_tune": m.tune is not None,
-                "freqs": grid[idx].round(2).tolist(), "measured": measured[idx].round(2).tolist(),
-                "predicted": predicted[idx].round(2).tolist()}
+        with self._lock:
+            m = self.measurements.get(mid)
+            grid = measurements.GRID
+            measured = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
+            state, why = self.measurement_status(m)
+            issues = ([why] if state != "current" else []) + measurements.prediction_issues(m, self.tune)
+            predicted = None if issues else measurements.smooth(self._predict(m, self.tune, grid), grid, smoothing)
+            idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
+            return {"id": m.id, "name": m.name, "channels": m.channels, "has_tune": m.tune is not None,
+                    "freqs": grid[idx].round(2).tolist(), "measured": measured[idx].round(2).tolist(),
+                    "predicted": predicted[idx].round(2).tolist() if predicted is not None else None,
+                    "prediction_issues": issues, "hardware_status": state,
+                    "prediction_method": "magnitude_delta" if len(m.channels) == 1 else "combined_power_ratio",
+                    "phase_verified": False}
 
     # ---- targets & system view -------------------------------------------------------
 
@@ -378,50 +856,90 @@ class Engine:
         if any(b.name == t.name for b in targets.BUILTINS):
             raise EngineError(f"{t.name!r} is a built-in target; save under another name")
         self.user_targets = [u for u in self.user_targets if u.name != t.name] + [t.model_copy(update={"builtin": False})]
-        (self.data_dir / "targets.json").write_text(json.dumps([u.model_dump() for u in self.user_targets], indent=2))
+        durable.write_with_backup(self.data_dir / "targets.json",
+                                  json.dumps([u.model_dump() for u in self.user_targets], indent=2), valid=_parse_targets)
 
     def system_view(self, seat: str = "driver", smoothing: float = 6, points: int = 200,
                     target: str | None = None, tune: Tune | None = None) -> dict:
-        """Everything the main graph needs in one call.
+        """Magnitude estimate from current nonoverlapping captures, with explicit coverage."""
+        with self._lock:
+            now = tune or self.tune
+            chosen, excluded, available = self._prediction_selection(seat, now)
+            grid = measurements.GRID
+            idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
+            groups: dict[str, list[np.ndarray]] = {}
+            meas_p, pred_p, per_channel = [], [], {}
+            covered = sorted({c for m in chosen for c in m.channels})
+            active = {ch.id for ch in now.channels if ch.role != Role.UNUSED and not ch.mute}
+            limitations = ["Magnitude-only estimate; phase, delay and polarity effects between outputs are not verified.",
+                           "Capture and playback levels must be comparable; absolute SPL and clipping/headroom are not verified.",
+                           "Deep filter attenuation and mute use numerical floors; remeasurement is required to verify the result.",
+                           "Outside each capture frequency range, edge values are extended; inspect contributor bandwidths before interpreting the curve."]
+            if not self._master_on_device():
+                limitations.append("Master gain is workstation-only on this DSP (not sent), so it is left out of this estimate.")
+            if len(chosen) > 1:
+                limitations.append("Separate captures are combined as a power sum, not a measured acoustic system response.")
+            if any(len(m.channels) > 1 for m in chosen):
+                limitations.append("Combined captures use an approximate power-ratio change and cannot identify individual output responses.")
+            out = {"seat": seat, "freqs": grid[idx].round(2).tolist(), "target_name": target or self.target_name,
+                   "measurement_count": len(chosen), "available_measurement_count": available,
+                   "coverage": {"outputs": covered, "missing_outputs": sorted(active - set(covered))},
+                   "contributors": [{"id": m.id, "name": m.name, "channels": m.channels,
+                                     "fingerprint": self._measurement_fp(m), "taken_at": m.taken_at,
+                                     "frequency_range_hz": [m.freqs[0], m.freqs[-1]]} for m in chosen],
+                   "excluded": excluded, "limitations": limitations, "phase_verified": False,
+                   "aggregation": "power_sum" if len(chosen) > 1 else "single_capture" if chosen else "none"}
+            for m in chosen:
+                meas = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
+                pred = measurements.smooth(self._predict(m, now, grid), grid, smoothing)
+                meas_p.append(10 ** (meas / 10))
+                pred_p.append(10 ** (pred / 10))
+                roles = {now.channel(c).role.value for c in m.channels}
+                role = next(iter(roles)) if len(roles) == 1 else "mixed"
+                groups.setdefault(role, []).append(10 ** (pred / 10))
+                # A combined capture is never presented as each driver's individual response.
+                if len(m.channels) == 1:
+                    per_channel[m.channels[0]] = pred[idx].round(2).tolist()
+            if not chosen:
+                return out | {"measured": None, "predicted": None, "target": None, "groups": {}, "channels": {}}
+            meas_sum = 10 * np.log10(sum(meas_p))
+            pred_sum = 10 * np.log10(sum(pred_p))
+            band = (grid > 300) & (grid < 3000)
+            tgt = self.target(target).at(grid)
+            tgt = tgt - tgt[band].mean() + pred_sum[band].mean()
+            return out | {
+                "measured": meas_sum[idx].round(2).tolist(),
+                "predicted": pred_sum[idx].round(2).tolist(),
+                "target": tgt[idx].round(2).tolist(),
+                "groups": {r: (10 * np.log10(sum(v)))[idx].round(2).tolist() for r, v in groups.items()},
+                "channels": per_channel,
+            }
 
-        Uses the latest measurement per channel set for the seat. System curves are power
-        sums (phase-blind) until sweep data with phase is available."""
-        grid = measurements.GRID
-        idx = np.linspace(0, len(grid) - 1, min(points, len(grid))).round().astype(int)
-        latest: dict[tuple, measurements.Measurement] = {}
+    def _prediction_selection(self, seat: str, tune: Tune | None = None) -> tuple[list, list[dict], int]:
+        """Prefer isolated, newest captures; report every refusal and overlap."""
+        candidates, excluded, available = [], [], 0
         for info in self.measurements.list():
-            if info["seat"] != seat or not info["channels"]:
+            if measurements.normalise_seat(info["seat"]) != measurements.normalise_seat(seat):
                 continue
-            latest[tuple(info["channels"])] = self.measurements.get(info["id"])
-        groups: dict[str, list[np.ndarray]] = {}
-        meas_p, pred_p = [], []
-        per_channel: dict[str, list[float]] = {}
-        for chans, m in latest.items():
-            meas = measurements.smooth(np.interp(np.log(grid), np.log(m.freqs), m.spl), grid, smoothing)
-            pred = measurements.smooth(measurements.predict(m, tune or self.tune, grid), grid, smoothing)
-            meas_p.append(10 ** (meas / 10))
-            pred_p.append(10 ** (pred / 10))
-            role = (m.tune or tune or self.tune).channel(chans[0]).role.value
-            groups.setdefault(role, []).append(10 ** (pred / 10))
-            for c in chans:
-                per_channel[c] = pred[idx].round(2).tolist()
-        out = {"seat": seat, "freqs": grid[idx].round(2).tolist(), "target_name": target or self.target_name,
-               "measurement_count": len(latest)}
-        if not latest:
-            return out | {"measured": None, "predicted": None, "target": None, "groups": {}, "channels": {}}
-        meas_sum = 10 * np.log10(sum(meas_p))
-        pred_sum = 10 * np.log10(sum(pred_p))
-        # anchor the target at the predicted level around 1 kHz (300 Hz - 3 kHz mean)
-        band = (grid > 300) & (grid < 3000)
-        tgt = self.target(target).at(grid)
-        tgt = tgt - tgt[band].mean() + pred_sum[band].mean()
-        return out | {
-            "measured": meas_sum[idx].round(2).tolist(),
-            "predicted": pred_sum[idx].round(2).tolist(),
-            "target": tgt[idx].round(2).tolist(),
-            "groups": {r: (10 * np.log10(sum(v)))[idx].round(2).tolist() for r, v in groups.items()},
-            "channels": per_channel,
-        }
+            available += 1
+            m = self.measurements.get(info["id"])
+            state, why = self.measurement_status(m)
+            issues = ([why] if state != "current" else []) + measurements.prediction_issues(m, tune or self.tune)
+            if issues:
+                excluded.append({"id": m.id, "name": m.name, "reason": "; ".join(issues)})
+            else:
+                candidates.append(m)
+        candidates.sort(key=lambda m: (len(m.channels) != 1, -m.taken_at, m.id))
+        chosen, covered = [], set()
+        for m in candidates:
+            overlap = covered.intersection(m.channels)
+            if overlap:
+                excluded.append({"id": m.id, "name": m.name,
+                                 "reason": "Overlaps selected outputs " + ", ".join(sorted(overlap))})
+            else:
+                chosen.append(m)
+                covered.update(m.channels)
+        return chosen, excluded, available
 
     # ---- proposals ------------------------------------------------------------------------
 
@@ -429,7 +947,7 @@ class Engine:
         """Latest measurement covering each channel at a seat (single-channel preferred)."""
         out, single = {}, set()
         for info in self.measurements.list():
-            if info["seat"] != seat or not info["channels"]:
+            if measurements.normalise_seat(info["seat"]) != measurements.normalise_seat(seat) or not info["channels"]:
                 continue
             m = None
             for c in info["channels"]:
@@ -442,28 +960,15 @@ class Engine:
 
     # -- solver targets: built only from trusted, non-overlapping measurements --
 
-    SOLVER_INPUT_FIELDS = {"role", "hp", "lp", "eq", "gain_db", "mute", "mix"}
+    SOLVER_INPUT_FIELDS = {"role", "hp", "lp", "eq", "gain_db", "mute", "mix", "delay_ms", "invert"}
 
     def channel_inputs(self, tune: Tune, channel: str) -> str:
         """Fingerprint of the channel settings the magnitude solvers consume (not names/colours)."""
         return fingerprint(tune.channel(channel).model_dump(include=self.SOLVER_INPUT_FIELDS))
 
     def _anchor_measurements(self, seat: str) -> list[measurements.Measurement]:
-        """Trusted measurements for level anchoring: current provenance, no channel counted twice.
-        Single-channel and newer measurements win."""
-        candidates = []
-        for info in self.measurements.list():
-            if info["seat"] == seat and info["channels"]:
-                m = self.measurements.get(info["id"])
-                if m.tune is not None and self.measurement_status(m)[0] == "current":
-                    candidates.append(m)
-        candidates.sort(key=lambda m: (len(m.channels) != 1, -m.taken_at))
-        chosen, covered = [], set()
-        for m in candidates:
-            if covered.isdisjoint(m.channels):
-                chosen.append(m)
-                covered.update(m.channels)
-        return chosen
+        """Use the same current, eligible, nonoverlapping captures as the displayed estimate."""
+        return self._prediction_selection(seat)[0]
 
     def solver_target(self, seat: str, mode: str) -> tuple[np.ndarray, dict[str, str]]:
         """Target array a solver uses, plus the anchor measurements it depends on.
@@ -480,7 +985,7 @@ class Engine:
         if not anchor:
             raise NoTrustedAnchor(f"no trusted measurement at the {seat} seat to set a level reference "
                                   "(measurements with unknown or outdated drivers are not used)")
-        power = sum(10 ** (measurements.smooth(measurements.predict(m, self.tune, grid), grid, 6) / 10) for m in anchor)
+        power = sum(10 ** (measurements.smooth(self._predict(m, self.tune, grid), grid, 6) / 10) for m in anchor)
         pred = 10 * np.log10(power)
         return tgt - tgt[band].mean() + pred[band].mean(), {m.id: self._measurement_fp(m) for m in anchor}
 
@@ -608,7 +1113,11 @@ class Engine:
             if state == "current" and m.tune is None:
                 notes.append(f"refused {m.name}: capture-time tune is unknown")
             elif state == "current":
-                usable[ch] = m
+                issues = measurements.prediction_issues(m, self.tune)
+                if issues:
+                    notes.append(f"refused {m.name}: {'; '.join(issues)}")
+                else:
+                    usable[ch] = m
             elif why not in notes:
                 notes.append(f"refused {why}")
         return usable, notes
@@ -723,12 +1232,13 @@ class Engine:
         slot = slot.upper()
         if slot not in ("A", "B"):
             raise EngineError("slot must be A or B")
-        t = self.snapshot_tune(snapshot) if snapshot else self.tune.model_copy(deep=True)
-        self.ab[slot] = t
-        if self.ab["active"] is None:
-            self.ab["active"] = slot if snapshot is None else None
-        self.revision += 1
-        return self.ab_state()
+        with self._lock:
+            t = self.snapshot_tune(snapshot) if snapshot else self.tune.model_copy(deep=True)
+            self.ab[slot] = t
+            if self.ab["active"] is None:
+                self.ab["active"] = slot if snapshot is None else None
+            self._autosave()
+            return self.ab_state()
 
     def ab_toggle(self, source: str) -> dict:
         with self._lock:
@@ -740,12 +1250,11 @@ class Engine:
             problems = self._check(t)
             if problems:
                 raise SafetyRejected(problems)
-            previous = self.tune
-            self._adopt(t.model_copy(deep=True), source, f"A/B → {nxt} ({t.name})")
-            self.history.append(previous)
-            if self.ab["active"]:
-                self.ab[cur] = previous.model_copy(deep=True)  # retain edits only after a successful switch
-            self.ab["active"] = nxt
+            slots = dict(self.ab)
+            if slots["active"]:
+                slots[cur] = self.tune.model_copy(deep=True)
+            slots["active"] = nxt
+            self._adopt(t.model_copy(deep=True), source, f"A/B → {nxt} ({t.name})", ab=slots)
             return self.ab_state()
 
     def ab_state(self) -> dict:
@@ -768,6 +1277,14 @@ class Engine:
 
     def status(self) -> dict:
         return {
+            "demo": self.demo,
+            "physical_writes_allowed": self.physical_writes_allowed,
+            "master_on_device": self._master_on_device(),
+            "state_faults": list(self.state_faults),
+            "measure_run": self.measure_run_view(),
+            "interrupted_measure_run": self.interrupted_run,
+            "unmute_levels": self.unmute_levels(),
+            "connection_epoch": self._connection_epoch,
             "device": self.device.__dict__,
             "tune_name": self.tune.name,
             "revision": self.revision,
@@ -775,8 +1292,12 @@ class Engine:
             "proposals": [{"id": p.id, "title": p.title, "kind": p.kind, "changes": len(p.edits), "source": p.source}
                           for p in self.proposals.values()],
             "undo_depth": len(self.history),
+            "redo_depth": len(self.redo_stack),
+            "save_error": self.save_error,
+            "recovery_notice": self.recovery_notice,
             "pending_writes": None if self.device.baselined else self.pending_writes,
             "recent_events": [e.__dict__ for e in self.events[-20:]],
+            "advisories": self._advisories(self.tune),
         }
 
     # ---- equipment / system design ---------------------------------------------------------
@@ -800,14 +1321,51 @@ class Engine:
                 self.design = equipment.SystemDesign.model_validate_json(path.read_text())
                 raise EngineError("Invalid system design or physical output protection specifications") from exc
             self._save_protections(protections)
-            path.write_text(proposed.model_dump_json(indent=2))
+            self._write_design(path, proposed)
             self.design = proposed
             self.revision += 1
+
+    @staticmethod
+    def _output_context(ch) -> str:
+        return fingerprint({"mix": ch.mix, "role": ch.role.value})
+
+    def unmute_levels(self, t: Tune | None = None) -> dict[str, float]:
+        """Levels outputs were playing at when muted on this connection, still valid for t's
+        routing/role. Unmuting at or below these returns to a known state."""
+        t = t or self.tune
+        out = {}
+        for cid, (gain, ctx) in self._muted_at.items():
+            try:
+                if self._output_context(t.channel(cid)) == ctx:
+                    out[cid] = gain
+            except KeyError:
+                pass
+        return out
+
+    def _track_mutes(self, old: Tune, new: Tune) -> None:
+        for n in new.channels:
+            try:
+                o = old.channel(n.id)
+            except KeyError:
+                continue
+            if n.mute and not o.mute:
+                # the level that was audible before the mute (not a gain raised in the same edit)
+                self._muted_at[n.id] = (min(o.gain_db, n.gain_db), self._output_context(o))
+            elif not n.mute:
+                self._muted_at.pop(n.id, None)
 
     def _check(self, t: Tune, previous: Tune | None = None) -> list[str]:
         return safety.check(t, self.policy, previous=previous,
                             driver_limits=equipment.channel_driver_limits(self.design),
-                            protections=self.protections)
+                            protections=self.protections,
+                            # Bound to the candidate: a reroute/role change in the same edit as the
+                            # unmute must not inherit the old route's remembered level. Protection
+                            # floors are checked on every edit independently of this memory.
+                            unmute_levels=self.unmute_levels(t) if previous is not None else None)
+
+    def _advisories(self, t: Tune) -> list[str]:
+        return safety.advisories(t, self.policy, driver_limits=equipment.channel_driver_limits(self.design),
+                                 protections=self.protections, advisory_protections=self.advisory_protections)
 
     def _persist_protections(self, t: Tune) -> None:
         with self._lock:
@@ -818,11 +1376,10 @@ class Engine:
         path = self.data_dir / "protections.json"
         encoded = value.model_dump_json(indent=2)
         if not path.exists() or path.read_text() != encoded:
-            temporary = path.with_suffix(".tmp")
-            temporary.write_text(encoded)
-            temporary.replace(path)
+            durable.write_with_backup(path, encoded, valid=provenance.load)
         self.protection_book = value
         self.protections = value.effective()
+        self.advisory_protections = value.effective(include_advisory=True)
 
     def configure_output_protection(self, cid: str, value: safety.OutputProtection, confirm: str) -> dict:
         """Retired bulk operation; retain an explicit error for older clients."""
@@ -857,10 +1414,34 @@ class Engine:
 
     def _autosave(self):
         self.revision += 1
-        (self.data_dir / "current.json").write_text(self.tune.model_dump_json(indent=2))
+        self._save_workstation()
+
+    def _save_workstation(self):
+        try:
+            workstation.save(self.data_dir, workstation.Checkpoint(
+                tune=self.tune, history=self.history, redo=self.redo_stack, ab=workstation.Slots(**self.ab)))
+        except (OSError, workstation.RecoveryError):
+            # The accepted tune may already have reached the DSP. Do not report a
+            # rejected edit or roll back memory; make unsaved work explicit instead.
+            self.save_error = "Session changes are not saved. Keep the app open, check available disk space and permissions, then retry saving."
+            return
+        self.save_error = None
+        try:
+            workstation.atomic_write(self.data_dir / "current.json", self.tune.model_dump_json(indent=2))
+        except OSError:
+            self.save_error = "Session saved, but the current.json compatibility export failed. Retry saving after checking disk space and permissions."
+
+    def retry_save(self):
+        with self._lock:
+            self._save_workstation()
+            self._log("owner", "retried session save")
+            return {"ok": self.save_error is None}
 
     def _log(self, source: str, summary: str, writes: int = 0):
         self.events.append(Event(time.time(), source, summary, writes))
         self.events = self.events[-500:]
-        with open(self.data_dir / "events.jsonl", "a") as fh:
-            fh.write(json.dumps(self.events[-1].__dict__) + "\n")
+        try:
+            with open(self.data_dir / "events.jsonl", "a") as fh:
+                fh.write(json.dumps(self.events[-1].__dict__) + "\n")
+        except OSError:
+            self.save_error = self.save_error or "The activity log could not be saved. Check disk space and permissions, then retry saving the session."

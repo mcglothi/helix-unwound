@@ -82,8 +82,11 @@ crash-durable event store, and backups remain important.
 
 ## Remaining limits
 
-The Studio system display still combines stored seat measurements without the
-solver's provenance filtering; prediction-display honesty is a separate checkpoint.
+The Studio/Drive display uses current capture hardware with a known capture-time
+tune, excludes overlapping outputs, and reports included/excluded sources and
+missing active outputs. Unknown/historical captures remain readable in the library;
+their raw curves remain available but are not projected onto current hardware.
+See [PREDICTION.md](PREDICTION.md) for selection and numerical assumptions.
 Magnitude-only measurements cannot establish crossover phase or summation. Acoustic
 verification and Windows protocol captures remain necessary before live writes.
 Rendered browser/phone acceptance of this view is still outstanding.

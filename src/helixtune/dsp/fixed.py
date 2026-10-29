@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 FRAC_BITS = 24
 SCALE = 1 << FRAC_BITS
 MAX = (1 << 31) - 1
@@ -9,7 +11,9 @@ MIN = -(1 << 31)
 
 
 def to_824(x: float) -> int:
-    v = round(x * SCALE)
+    # Truncate toward zero (C cast), as PC-Tool does: reproduces all 143 parameter
+    # words of the 2026-10-17 captures bit-exactly; round() matched only 109.
+    v = math.trunc(x * SCALE)
     if not MIN <= v <= MAX:
         raise OverflowError(f"{x} does not fit 8.24 (range ±128)")
     return v

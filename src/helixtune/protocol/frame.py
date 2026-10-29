@@ -4,8 +4,8 @@ Derived statically from ATF_DSP_PC-TOOL.exe 4.80b (see notes/FINDINGS.md):
   TX serializer  FUN_0056c710
   RX validator   FUN_0056c810
 
-Not yet verified against a hardware capture. In particular the TX length byte
-is decompiled as N+1 while the RX length byte is N; treat that as provisional.
+TX N+1, RX N and sum8 framing matched the 2026-10-17 PC-Tool USB captures.
+This does not validate every command or its parameter semantics.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ RX_START = 0x43  # 'C' device -> host
 DEFAULT_CHANNEL = 0x01
 
 # Sent instead of a normal frame when the uartbuffer "sync" flag is set.
-SYNC_FRAME = bytes([0x42, 0x00] * 5)
+SYNC_FRAME = bytes([0x42, 0x00] * 10)
 
 
 class FrameError(ValueError):

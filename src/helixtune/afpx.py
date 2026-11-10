@@ -92,6 +92,15 @@ def _xo(fil: ET.Element | None, on_code: int) -> Crossover | None:
                      slope_db=slope, freq_hz=float(fil.get("F")))
 
 
+def _bypass_flag(oc: ET.Element, key: str, channel_id: str, rep: ImportReport) -> bool:
+    """PC-Tool per-output bypass flags; "1" = bypassed (2022 stored tune: subs hpBy=1, HP shown bypassed)."""
+    value = oc.get(key, "0")
+    if value not in ("0", "1"):
+        rep.warnings.append(f"{channel_id}: unknown {key}={value!r}; treated as not bypassed")
+        return False
+    return value == "1"
+
+
 def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[Tune, ImportReport]:
     rep = ImportReport(source=name, version=root.get("V", "?"), date=root.get("D", "?"))
     if root.get("Dev") != PRO_MK2_DEV:
@@ -122,8 +131,17 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
             ch.delay_ms = round(int(t.get("T")) / sample_rate * 1000, 4)  # samples at 96 kHz; compared with PC-Tool 4.80b demo output
             if float(t.get("P", "0")) != 0:
                 rep.warnings.append(f"{ch.id}: unknown preset T.P={t.get('P')} (PM={t.get('PM')}) not applied; this is not the phase displayed by PC-Tool")
-        ch.hp = _xo(fils.get(31), XO_HP_ON)
-        ch.lp = _xo(fils.get(30), XO_LP_ON)
+        bypass = {key: _bypass_flag(oc, key, ch.id, rep) for key in ("hpBy", "lpBy", "EqBy")}
+        for fn, on, off, label in ((31, XO_HP_ON, XO_HP_OFF, "high-pass"), (30, XO_LP_ON, XO_LP_OFF, "low-pass")):
+            code = int(fils[fn].get("T", -1)) if fn in fils else None
+            if code is not None and code not in (on, off):
+                rep.warnings.append(f"{ch.id}: unknown {label} type code {code}; imported with no {label}")
+        ch.hp = None if bypass["hpBy"] else _xo(fils.get(31), XO_HP_ON)
+        ch.lp = None if bypass["lpBy"] else _xo(fils.get(30), XO_LP_ON)
+        if cn and bypass["hpBy"] and fils.get(31) is not None and int(fils[31].get("T", -1)) == XO_HP_ON:
+            rep.warnings.append(f"{ch.id}: high-pass is bypassed in the preset (hpBy=1); imported with no high-pass")
+        if cn and bypass["lpBy"] and fils.get(30) is not None and int(fils[30].get("T", -1)) == XO_LP_ON:
+            rep.warnings.append(f"{ch.id}: low-pass is bypassed in the preset (lpBy=1); imported with no low-pass")
         bands = []
         for n in range(EQ_BANDS):
             f = fils.get(n)
@@ -137,6 +155,10 @@ def to_tune(root: ET.Element, name: str, sample_rate: float = 96000.0) -> tuple[
             bands.append(EqBand(enabled=g != 0, type=EQ_TYPE_CODES.get(code, EqType.PEAK),
                                 freq_hz=float(f.get("F")), gain_db=g,
                                 q=min(30.0, max(0.1, float(f.get("Q", "1"))))))
+        if bypass["EqBy"]:
+            bands = [b.model_copy(update={"enabled": False}) for b in bands]
+            if cn and any(b.gain_db for b in bands):
+                rep.warnings.append(f"{ch.id}: EQ is bypassed in the preset (EqBy=1); bands imported disabled")
         ch.eq = bands
     # routing: PC-Tool edits the 12-input main matrix (AOM 1, G index = out*12 + in, inputs 0/1 =
     # Digital In L/R; captures 23/24). Older/other presets: fall back to the 2-input matrix (AOM 9).

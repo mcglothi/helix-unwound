@@ -33,6 +33,7 @@ class SafetyPolicy(BaseModel):
     max_channel_gain_db: float = 6.0
     max_master_gain_db: float = 0.0
     max_boost_step_db: float = 3.0   # largest single-change increase in any boost
+    max_total_boost_db: float = 12.0  # peak of one output's combined EQ + crossover + gain response
     roles: dict[Role, RolePolicy] = Field(default_factory=lambda: dict(DEFAULT_ROLES))
 
 
@@ -103,6 +104,11 @@ def check(tune: Tune, policy: SafetyPolicy, previous: Tune | None = None, driver
         for i, b in enumerate(ch.eq):
             if b.enabled and b.gain_db > policy.max_eq_boost_db:
                 problems.append(f"{ch.id} band {i + 1}: boost {b.gain_db} dB exceeds {policy.max_eq_boost_db} dB")
+        if not ch.mute:
+            peak, at = _peak_response(ch)
+            if peak > policy.max_total_boost_db + _TOL:
+                problems.append(f"{ch.id}: EQ and gain combine to {peak:+.1f} dB at {at:.0f} Hz, above the "
+                                f"{policy.max_total_boost_db:+g} dB limit for one output")
         guard = effective.outputs[ch.id]
         if guard.min_hp_hz is not None and not ch.mute:
             if ch.hp is None:
@@ -145,6 +151,7 @@ def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy, unmute_levels: dict
         out.append(f"master gain raised by {new.master_gain_db - old.master_gain_db:.1f} dB in one step (max {lim})")
     for n in new.channels:
         o = old.channel(n.id)
+        before_channel = len(out)
         if n.gain_db - o.gain_db > lim:
             out.append(f"{n.id}: gain raised by {n.gain_db - o.gain_db:.1f} dB in one step (max {lim})")
         if o.mute and not n.mute and n.gain_db > 0:
@@ -160,4 +167,44 @@ def _step_limits(new: Tune, old: Tune, policy: SafetyPolicy, unmute_levels: dict
             oboost = ob.gain_db if ob.enabled else 0.0
             if nboost - max(oboost, 0.0) > lim and nboost > 0:
                 out.append(f"{n.id} band {i + 1}: boost raised by {nboost - max(oboost, 0):.1f} dB in one step (max {lim})")
+        if len(out) == before_channel and not n.mute:
+            rise, at = _largest_rise(o, n)
+            if rise > lim + _TOL:
+                out.append(f"{n.id}: output raised by {rise:.1f} dB at {at:.0f} Hz in one step (max {lim}); "
+                           "several smaller changes add up at the same frequency")
     return out
+
+
+_TOL = 0.05  # dB; filter maths rounding, not a margin
+
+
+def _grid(*channels):
+    """Log grid over the audio band plus every enabled EQ centre, so narrow peaks are not missed."""
+    import numpy as np
+
+    centres = [b.freq_hz for ch in channels for b in ch.eq if b.enabled and 10 <= b.freq_hz <= 24000]
+    return np.unique(np.concatenate([np.geomspace(10, 24000, 600), np.asarray(centres, dtype=float)]))
+
+
+def _response(ch, freqs, crossovers: bool = True):
+    """Predicted output magnitude with the mute ignored (mutes are checked separately).
+    crossovers=False gives EQ + gain only: crossover moves are governed by the high-pass floors."""
+    from .mapping import channel_response
+    from .model import SAMPLE_RATE
+
+    update = {"mute": False} if crossovers else {"mute": False, "hp": None, "lp": None}
+    return channel_response(ch.model_copy(update=update), SAMPLE_RATE, freqs)
+
+
+def _peak_response(ch) -> tuple[float, float]:
+    freqs = _grid(ch)
+    db = _response(ch, freqs)
+    i = int(db.argmax())
+    return float(db[i]), float(freqs[i])
+
+
+def _largest_rise(old, new) -> tuple[float, float]:
+    freqs = _grid(old, new)
+    rise = _response(new, freqs, crossovers=False) - _response(old, freqs, crossovers=False)
+    i = int(rise.argmax())
+    return float(rise[i]), float(freqs[i])

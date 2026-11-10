@@ -1,9 +1,25 @@
 # helixTune handoff
 
-Last Updated: 2026-10-29
+Last Updated: 2026-11-10
 Status: ✅ Through 2026-10-19 everything is Codex-approved, pushed and CI-green (`5896713`, run 39268262620): physical write sessions (used live 2026-10-18), power-loss-safe state, Measure this seat, time alignment by crossover summing. ⚠️ Next: first truck run of both workflows with the UMIK-1 and phone pink noise (see `docs/TRUCK-MEASUREMENT-CHECKLIST.md`).
 Current owner: none after this checkpoint; claim ownership in AIKB before editing
 Branch: `pi/helixtune-foundation`
+
+## 2026-11-10: review fixes H1 and H3 (branch `pi/h1-total-boost-cap`, local, not pushed)
+
+Fable review `AIKB/personal-projects/helixtune-review-2026-11.md` H1: EQ limits were per band only (30 bands at
++3 dB stacked to +90 dB with no problem). `safety.check` now refuses an unmuted output whose predicted
+EQ + crossover + gain response peaks above `SafetyPolicy.max_total_boost_db` (+12 dB), and the step check refuses
+an EQ + gain rise above `max_boost_step_db` at any frequency (crossover moves stay governed by the HP floors).
+Grid: 600 log points 10 Hz-24 kHz plus every enabled band centre. The 2022 stored tune peaks at +4.1 dB.
+Tests: `tests/test_safety_total_boost.py` (9; 4 fail with the fix reverted); full suite 509 passed.
+H3: the `.afpx` importer now honours the per-output `hpBy`/`lpBy`/`EqBy` bypass flags ("1" = bypassed;
+unknown values warn and keep the filter) and warns on unknown crossover type codes instead of silently
+dropping the filter. The 2022 stored tune now imports with no high-pass on I/J (subs), as PC-Tool shows it.
+The snapshot already in `~/.helixtune` and the scene on the truck still carry the old 20 Hz LR24 sub HP;
+re-importing will make the safety check flag the subs (15 Hz subsonic rule): Tim's call.
+Tests: 5 new in `tests/test_afpx_portable.py` (4 fail with the fix reverted); full suite 514 passed.
+Review findings H2, H4, H5, S1-S4, M1-M5, C1-C5 remain open; H2 independently confirmed.
 
 ## Resume
 
